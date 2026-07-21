@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+!build.spec
+data/backups/
+data/exports/
+data/documents.json
+data/counters.json
+.claude/

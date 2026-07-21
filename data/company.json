@@ -1,0 +1,17 @@
+{
+  "name_cn": "示例贸易有限公司",
+  "name_en": "SAMPLE TRADING CO., LTD.",
+  "address_cn": "中国广东省深圳市南山区科技园示例路1号",
+  "address_en": "No.1 Sample Road, Nanshan District, Shenzhen, Guangdong, China",
+  "phone": "+86 755 12345678",
+  "email": "sales@sampletrading.com",
+  "tax_id": "91440300MA5EXAMPLE",
+  "bank_name_cn": "中国银行深圳分行",
+  "bank_name_en": "BANK OF CHINA, SHENZHEN BRANCH",
+  "bank_account": "1234 5678 9012 3456",
+  "swift_code": "BKCHCNBJ400",
+  "bank_address_en": "No.88 Sample Ave, Shenzhen, China",
+  "default_pol": "Shenzhen, China",
+  "default_incoterm": "FOB",
+  "logo_path": "logo.png"
+}
