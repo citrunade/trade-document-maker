@@ -14,10 +14,20 @@ from PyQt6.QtCore import QDate
 from core import storage, calc, pdf_export
 from core.models import make_document, make_doc_line
 from core.paths import get_exports_dir
+from ui.ai_import_helper import (
+    show_privacy_notice_once, pick_import_file, run_ai_extraction, ImportReviewDialog,
+)
 import os
 
 INCOTERMS = ["FOB", "CIF", "CFR", "EXW", "DAP", "DDP", "FCA", "CPT", "CIP"]
 CURRENCIES = ["USD", "EUR", "RMB"]
+
+def _safe_float(value) -> float:
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
 
 LINE_COLUMNS = [
     "型号", "中文品名", "英文品名", "数量", "单价", "小计",
@@ -144,7 +154,10 @@ class DocumentTab(QWidget):
         btn_row = QHBoxLayout()
         add_btn = QPushButton("添加产品")
         add_btn.clicked.connect(self._add_line)
+        ai_btn = QPushButton("AI 导入产品明细（PO/PDF/图片/Excel）")
+        ai_btn.clicked.connect(self._ai_import_lines)
         btn_row.addWidget(add_btn)
+        btn_row.addWidget(ai_btn)
         btn_row.addStretch()
         lines_layout.addLayout(btn_row)
 
@@ -209,6 +222,39 @@ class DocumentTab(QWidget):
             line = make_doc_line(dialog.selected_product, quantity=1)
             self.document["lines"].append(line)
             self._recalculate()
+
+    def _ai_import_lines(self):
+        if not show_privacy_notice_once(self):
+            return
+        path = pick_import_file(self)
+        if not path:
+            return
+        from core.ai_import import import_document_lines
+        extracted = run_ai_extraction(self, import_document_lines, path)
+        if extracted is None:
+            return
+        if not extracted:
+            QMessageBox.information(self, "提示", "未能从该文件中识别出任何产品明细")
+            return
+
+        review_columns = [
+            ("model_no", "型号"), ("name_cn", "中文品名"), ("name_en", "英文品名"),
+            ("hs_code", "HS编码"), ("unit", "单位"), ("quantity", "数量"), ("unit_price", "单价"),
+        ]
+        dialog = ImportReviewDialog(self, "审核 AI 识别的产品明细", review_columns, extracted)
+        if not dialog.exec():
+            return
+        confirmed = dialog.get_confirmed_rows()
+        for row in confirmed:
+            row["quantity"] = _safe_float(row.get("quantity"))
+            row["unit_price"] = _safe_float(row.get("unit_price"))
+            self.document["lines"].append(row)
+        self._recalculate()
+        QMessageBox.information(
+            self, "提示",
+            f"已导入 {len(confirmed)} 条产品明细，重量/尺寸信息未包含在采购订单中，"
+            "如需精确计算净重/毛重/体积，请在物料库中维护对应产品后手动补充。",
+        )
 
     def _remove_line(self, index: int):
         if 0 <= index < len(self.document["lines"]):

@@ -13,5 +13,9 @@
   "bank_address_en": "No.88 Sample Ave, Shenzhen, China",
   "default_pol": "Shenzhen, China",
   "default_incoterm": "FOB",
-  "logo_path": "logo.png"
+  "logo_path": "logo.png",
+  "zhipu_api_key": "",
+  "zhipu_base_url": "",
+  "zhipu_text_model": "",
+  "zhipu_vision_model": ""
 }

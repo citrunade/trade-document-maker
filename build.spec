@@ -33,6 +33,8 @@ a = Analysis(
         'reportlab.pdfbase._fontdata_widths_symbol',
         'reportlab.pdfbase._fontdata_widths_zapfdingbats',
         'PyQt6.sip',
+        'fitz',
+        'tabulate',
     ],
     hookspath=[],
     hooksconfig={},

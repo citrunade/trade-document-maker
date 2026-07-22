@@ -55,6 +55,10 @@ DEFAULT_COMPANY = {
     "default_pol": "Shenzhen, China",
     "default_incoterm": "FOB",
     "logo_path": "logo.png",
+    "zhipu_api_key": "",
+    "zhipu_base_url": "",
+    "zhipu_text_model": "",
+    "zhipu_vision_model": "",
 }
 
 
@@ -62,6 +66,15 @@ def load_company() -> dict:
     data = _read_json(COMPANY_FILE, None)
     if data is None:
         data = DEFAULT_COMPANY.copy()
+        _write_json(COMPANY_FILE, data)
+        return data
+    # 兼容旧版本数据文件：自动补全新增字段的默认值，避免 KeyError
+    updated = False
+    for key, value in DEFAULT_COMPANY.items():
+        if key not in data:
+            data[key] = value
+            updated = True
+    if updated:
         _write_json(COMPANY_FILE, data)
     return data
 

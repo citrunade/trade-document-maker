@@ -10,6 +10,9 @@ from PyQt6.QtWidgets import (
 
 from core import storage
 from core.models import make_product
+from ui.ai_import_helper import (
+    show_privacy_notice_once, pick_import_file, run_ai_extraction, ImportReviewDialog,
+)
 
 COLUMNS = [
     ("model_no", "型号"),
@@ -135,10 +138,13 @@ class ProductsTab(QWidget):
         del_btn.clicked.connect(self._delete_product)
         import_btn = QPushButton("Excel 批量导入")
         import_btn.clicked.connect(self._import_excel)
+        ai_import_btn = QPushButton("AI 批量导入（PDF/图片/Excel）")
+        ai_import_btn.clicked.connect(self._ai_import_products)
         top.addWidget(add_btn)
         top.addWidget(edit_btn)
         top.addWidget(del_btn)
         top.addWidget(import_btn)
+        top.addWidget(ai_import_btn)
         layout.addLayout(top)
 
         self.table = QTableWidget(0, len(COLUMNS))
@@ -274,6 +280,62 @@ class ProductsTab(QWidget):
         self._refresh_table()
         QMessageBox.information(self, "导入完成", f"成功导入 {imported} 条物料数据")
 
+    def _ai_import_products(self):
+        if not show_privacy_notice_once(self):
+            return
+        path = pick_import_file(self)
+        if not path:
+            return
+        from core.ai_import import import_products
+        extracted = run_ai_extraction(self, import_products, path)
+        if extracted is None:
+            return
+        if not extracted:
+            QMessageBox.information(self, "提示", "未能从该文件中识别出任何产品信息")
+            return
+
+        review_columns = [
+            ("model_no", "型号"), ("name_cn", "中文品名"), ("name_en", "英文品名"),
+            ("hs_code", "HS编码"), ("unit", "单位"), ("net_weight", "净重(kg)"),
+            ("gross_weight", "毛重(kg)"), ("length_mm", "长(mm)"), ("width_mm", "宽(mm)"),
+            ("height_mm", "高(mm)"), ("unit_price", "单价"), ("currency", "币种"),
+        ]
+        dialog = ImportReviewDialog(self, "审核 AI 识别的产品信息", review_columns, extracted)
+        if not dialog.exec():
+            return
+        confirmed = dialog.get_confirmed_rows()
+
+        added = 0
+        for row in confirmed:
+            product = make_product(
+                model_no=row.get("model_no", ""),
+                name_cn=row.get("name_cn", ""),
+                name_en=row.get("name_en", ""),
+                hs_code=row.get("hs_code", ""),
+                unit=row.get("unit", "pcs") or "pcs",
+                net_weight=_safe_float(row.get("net_weight")),
+                gross_weight=_safe_float(row.get("gross_weight")),
+                length_mm=_safe_float(row.get("length_mm")),
+                width_mm=_safe_float(row.get("width_mm")),
+                height_mm=_safe_float(row.get("height_mm")),
+                unit_price=_safe_float(row.get("unit_price")),
+                currency=row.get("currency", "USD") or "USD",
+                remark=row.get("remark", ""),
+            )
+            self.products.append(product)
+            added += 1
+
+        storage.save_products(self.products)
+        self._refresh_table()
+        QMessageBox.information(self, "导入完成", f"成功导入 {added} 条产品数据")
+
     def reload(self):
         self.products = storage.load_products()
         self._refresh_table()
+
+
+def _safe_float(value) -> float:
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0

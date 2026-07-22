@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 
 from core import storage
 from core.models import make_customer
+from ui.ai_import_helper import show_privacy_notice_once, pick_import_file, run_ai_extraction
 
 COLUMNS = [
     ("name_cn", "客户中文名称"),
@@ -94,9 +95,12 @@ class CustomersTab(QWidget):
         edit_btn.clicked.connect(self._edit_customer)
         del_btn = QPushButton("删除")
         del_btn.clicked.connect(self._delete_customer)
+        ai_btn = QPushButton("AI 导入客户")
+        ai_btn.clicked.connect(self._ai_import_customer)
         top.addWidget(add_btn)
         top.addWidget(edit_btn)
         top.addWidget(del_btn)
+        top.addWidget(ai_btn)
         layout.addLayout(top)
 
         self.table = QTableWidget(0, len(COLUMNS))
@@ -164,6 +168,23 @@ class CustomersTab(QWidget):
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.customers.remove(customer)
+            storage.save_customers(self.customers)
+            self._refresh_table()
+
+    def _ai_import_customer(self):
+        if not show_privacy_notice_once(self):
+            return
+        path = pick_import_file(self)
+        if not path:
+            return
+        from core.ai_import import import_customer
+        extracted = run_ai_extraction(self, import_customer, path)
+        if extracted is None:
+            return
+        dialog = CustomerEditDialog(self, extracted)
+        if dialog.exec():
+            data = dialog.get_data()
+            self.customers.append(data)
             storage.save_customers(self.customers)
             self._refresh_table()
 

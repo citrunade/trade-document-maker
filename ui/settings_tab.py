@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QGroupBox, QComboBox, QFileDialog, QMessageBox, QScrollArea,
 )
 
-from core import storage
+from core import storage, ai_client
 from core.paths import get_data_path, get_backups_dir
 
 
@@ -99,6 +99,38 @@ class SettingsTab(QWidget):
         tform.addRow("默认贸易术语：", self.default_incoterm)
         layout.addWidget(trade_box)
 
+        # --- AI 导入 (智谱 AI) ---
+        ai_box = QGroupBox("AI 文件导入设置（智谱 AI Zhipu/GLM）")
+        ai_layout = QVBoxLayout(ai_box)
+        ai_notice = QLabel(
+            "启用后可在客户档案/物料库/制单页面使用「AI 导入」功能，从 PDF/Excel/图片中自动识别字段。\n"
+            "注意：该功能需要联网，会将所选文件内容发送至智谱 AI（Zhipu/BigModel）云端 API，\n"
+            "与本软件其余功能的纯本地设计不同，仅在您主动点击「AI 导入」时才会触发。"
+        )
+        ai_notice.setWordWrap(True)
+        ai_notice.setStyleSheet("color: #999; font-size: 11px;")
+        ai_layout.addWidget(ai_notice)
+
+        ai_form = QFormLayout()
+        self.zhipu_api_key = QLineEdit()
+        self.zhipu_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.zhipu_base_url = QLineEdit()
+        self.zhipu_base_url.setPlaceholderText(ai_client.DEFAULT_BASE_URL)
+        self.zhipu_text_model = QLineEdit()
+        self.zhipu_text_model.setPlaceholderText(ai_client.DEFAULT_TEXT_MODEL)
+        self.zhipu_vision_model = QLineEdit()
+        self.zhipu_vision_model.setPlaceholderText(ai_client.DEFAULT_VISION_MODEL)
+        ai_form.addRow("智谱 AI API Key：", self.zhipu_api_key)
+        ai_form.addRow("API 地址（留空使用默认）：", self.zhipu_base_url)
+        ai_form.addRow("文本模型（留空使用默认）：", self.zhipu_text_model)
+        ai_form.addRow("视觉模型（留空使用默认）：", self.zhipu_vision_model)
+        ai_layout.addLayout(ai_form)
+
+        test_btn = QPushButton("测试连接")
+        test_btn.clicked.connect(self._test_ai_connection)
+        ai_layout.addWidget(test_btn)
+        layout.addWidget(ai_box)
+
         save_btn = QPushButton("保存设置")
         save_btn.setMinimumHeight(36)
         save_btn.clicked.connect(self._save)
@@ -135,6 +167,10 @@ class SettingsTab(QWidget):
         self.default_pol.setText(c.get("default_pol", ""))
         idx = self.default_incoterm.findText(c.get("default_incoterm", "FOB"))
         self.default_incoterm.setCurrentIndex(max(idx, 0))
+        self.zhipu_api_key.setText(c.get("zhipu_api_key", ""))
+        self.zhipu_base_url.setText(c.get("zhipu_base_url", ""))
+        self.zhipu_text_model.setText(c.get("zhipu_text_model", ""))
+        self.zhipu_vision_model.setText(c.get("zhipu_vision_model", ""))
         self._refresh_logo_preview()
 
     def _refresh_logo_preview(self):
@@ -192,9 +228,24 @@ class SettingsTab(QWidget):
             "bank_address_en": self.bank_address_en.text().strip(),
             "default_pol": self.default_pol.text().strip(),
             "default_incoterm": self.default_incoterm.currentText(),
+            "zhipu_api_key": self.zhipu_api_key.text().strip(),
+            "zhipu_base_url": self.zhipu_base_url.text().strip(),
+            "zhipu_text_model": self.zhipu_text_model.text().strip(),
+            "zhipu_vision_model": self.zhipu_vision_model.text().strip(),
         })
         storage.save_company(self.company)
         QMessageBox.information(self, "提示", "设置已保存")
+
+    def _test_ai_connection(self):
+        api_key = self.zhipu_api_key.text().strip()
+        base_url = self.zhipu_base_url.text().strip() or ai_client.DEFAULT_BASE_URL
+        text_model = self.zhipu_text_model.text().strip() or ai_client.DEFAULT_TEXT_MODEL
+        try:
+            ai_client.test_connection(api_key, base_url, text_model)
+        except ai_client.AIClientError as e:
+            QMessageBox.warning(self, "连接失败", str(e))
+            return
+        QMessageBox.information(self, "连接成功", "智谱 AI 连接测试成功！")
 
     def _backup_data(self):
         try:
