@@ -37,6 +37,7 @@ a = Analysis(
         'tabulate',
         'docx',
         'openpyxl',
+        'xlrd',
     ],
     hookspath=[],
     hooksconfig={},
