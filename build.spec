@@ -14,7 +14,7 @@ block_cipher = None
 # 处抛出 "Invalid version: 'unknown'" 报错（AI导入/Excel批量导入功能均会触发）。
 # 显式复制这些包的元数据即可解决。
 datas = []
-for pkg in ("openpyxl", "xlrd", "pandas", "python-docx", "reportlab", "Pillow"):
+for pkg in ("openpyxl", "xlrd", "pandas", "python-docx", "reportlab", "Pillow", "tabulate"):
     try:
         datas += copy_metadata(pkg)
     except Exception:
