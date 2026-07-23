@@ -4,25 +4,38 @@
 """
 import uuid
 
+from core import storage
+
 
 def new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
 def make_customer(
-    name_cn="", name_en="", consignee="", notify_party="",
-    dest_country="", pod="", vat_id="", email="", remark="",
+    customer_id=None, name_cn="", name_en="", country_region="", city="",
+    address_en="", tax_no="", contact_person="", email="", tel_phone="",
+    consignee="", notify_party="", pod="", remark="",
 ) -> dict:
+    """
+    客户主体信息，字段规范见 docs/客户主体信息设计文档.md。
+    customer_id 为主键（格式 CUST-0001），未传入时自动生成新编号。
+    consignee/notify_party/pod/remark 为外贸制单业务扩展字段，
+    不属于 OCR 提取的 10 个核心字段，但制单生成 PI/CI/PL 时需要用到。
+    """
     return {
-        "id": new_id(),
+        "customer_id": customer_id or storage.generate_customer_id(),
         "name_cn": name_cn,
         "name_en": name_en,
+        "country_region": country_region,
+        "city": city,
+        "address_en": address_en,
+        "tax_no": tax_no,
+        "contact_person": contact_person,
+        "email": email,
+        "tel_phone": tel_phone,
         "consignee": consignee,
         "notify_party": notify_party,
-        "dest_country": dest_country,
         "pod": pod,
-        "vat_id": vat_id,
-        "email": email,
         "remark": remark,
     }
 
@@ -90,7 +103,7 @@ def make_document(
         "ci_number": ci_number,
         "pl_number": pl_number,
         "date": date,
-        "customer_id": customer.get("id", ""),
+        "customer_id": customer.get("customer_id", ""),
         "customer_snapshot": customer,
         "currency": currency,
         "incoterm": incoterm,

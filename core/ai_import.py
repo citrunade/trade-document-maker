@@ -88,17 +88,24 @@ def _parse_json_response(raw: str):
 
 
 # ---------------- 提示词 ----------------
-CUSTOMER_PROMPT = """你是外贸单据信息提取助手。用户会提供一份文件内容（客户资料、名片、公司信笺或类似文件），
-请从中提取客户信息，并仅以如下 JSON 格式返回（找不到的字段填空字符串，不要编造信息）：
+CUSTOMER_PROMPT = """你是外贸单据信息提取助手。用户会提供一份文件内容（发票、箱单、产品目录、名片、公司信笺
+或类似文件）。只要识别出具备企业主体特征的信息（如买方、卖方、目录内企业信息等），一律判定为客户主体，
+不做买方/卖方角色区分；无法明确区分角色时也不要过滤，尽量捕获入库。
+请从中提取客户信息，并仅以如下 JSON 格式返回（找不到的字段填空字符串，不要编造信息；地址保持整段
+原文文本，不要拆分街道/门牌号/邮编）：
 {
-  "name_cn": "客户中文名称",
-  "name_en": "客户英文名称",
-  "consignee": "收货人信息（可多行，用\\n分隔）",
+  "name_cn": "中文名称",
+  "name_en": "英文名称",
+  "country_region": "国家/地区",
+  "city": "城市",
+  "address_en": "英文完整地址（整段文本）",
+  "tax_no": "税号/VAT",
+  "contact_person": "联系人",
+  "email": "电子邮箱",
+  "tel_phone": "联系电话",
+  "consignee": "收货人信息（如与地址不同，可多行，用\\n分隔）",
   "notify_party": "通知人信息",
-  "dest_country": "目的国",
-  "pod": "目的港",
-  "vat_id": "税号/VAT ID",
-  "email": "邮箱",
+  "pod": "目的港（若单据中出现具体港口名）",
   "remark": "其他备注信息"
 }
 只返回 JSON，不要包含任何其他说明文字。"""
@@ -189,7 +196,10 @@ def import_customer(path: str, config: dict) -> dict:
     if not isinstance(data, dict):
         raise AIImportError("AI 返回的客户信息格式不正确（应为 JSON 对象）。")
     customer = make_customer()
-    for key in ("name_cn", "name_en", "consignee", "notify_party", "dest_country", "pod", "vat_id", "email", "remark"):
+    for key in (
+        "name_cn", "name_en", "country_region", "city", "address_en", "tax_no",
+        "contact_person", "email", "tel_phone", "consignee", "notify_party", "pod", "remark",
+    ):
         if key in data and data[key] is not None:
             customer[key] = str(data[key])
     return customer

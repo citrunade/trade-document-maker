@@ -110,10 +110,13 @@ def _build_header(company: dict, doc_title_en: str, doc_title_cn: str, styles):
 
 def _party_info_table(doc: dict, doc_number: str, styles, include_payment: bool):
     customer = doc.get("customer_snapshot", {})
+    consignee = customer.get("consignee", "") or customer.get("address_en", "")
+    tax_no = customer.get("tax_no", "")
     left_text = (
         f"<b>To / 致：</b><br/>{customer.get('name_en', '')}<br/>{customer.get('name_cn', '')}<br/>"
-        f"<b>Consignee / 收货人：</b><br/>{customer.get('consignee', '').replace(chr(10), '<br/>')}<br/>"
+        f"<b>Consignee / 收货人：</b><br/>{consignee.replace(chr(10), '<br/>')}<br/>"
         f"<b>Notify Party / 通知人：</b><br/>{customer.get('notify_party', '').replace(chr(10), '<br/>')}"
+        + (f"<br/><b>Tax No. / VAT：</b>{tax_no}" if tax_no else "")
     )
     right_rows = [
         ("No. / 单号：", doc_number),
@@ -121,7 +124,7 @@ def _party_info_table(doc: dict, doc_number: str, styles, include_payment: bool)
         ("POL / 起运港：", doc.get("pol", "")),
         ("POD / 目的港：", doc.get("pod", "")),
         ("Incoterm / 贸易术语：", doc.get("incoterm", "")),
-        ("Destination / 目的国：", customer.get("dest_country", "")),
+        ("Destination / 目的国：", customer.get("country_region", "")),
     ]
     if include_payment:
         right_rows.append(("Payment / 付款方式：", doc.get("payment_terms", "")))

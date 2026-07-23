@@ -206,7 +206,7 @@ class DocumentTab(QWidget):
     def _on_customer_changed(self):
         customer = self.customer_combo.currentData()
         if customer:
-            self.document["customer_id"] = customer.get("id", "")
+            self.document["customer_id"] = customer.get("customer_id", "")
             self.document["customer_snapshot"] = customer
             self.pod.setText(customer.get("pod", ""))
 
@@ -409,7 +409,7 @@ class DocumentTab(QWidget):
         self._refresh_customer_combo()
         idx = next(
             (i for i in range(self.customer_combo.count())
-             if self.customer_combo.itemData(i) and self.customer_combo.itemData(i).get("id") == doc.get("customer_id")),
+             if self.customer_combo.itemData(i) and self.customer_combo.itemData(i).get("customer_id") == doc.get("customer_id")),
             0,
         )
         self.customer_combo.setCurrentIndex(idx)

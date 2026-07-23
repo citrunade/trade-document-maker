@@ -146,6 +146,18 @@ def generate_doc_number(prefix: str) -> str:
     return f"{key}{seq:03d}"
 
 
+def generate_customer_id() -> str:
+    """
+    生成客户编号：CUST- + 4位全局顺序流水号（不含日期，纯递增）。
+    例如：CUST-0001, CUST-0002 ...
+    """
+    counters = load_counters()
+    seq = counters.get("CUSTOMER_SEQ", 0) + 1
+    counters["CUSTOMER_SEQ"] = seq
+    save_counters(counters)
+    return f"CUST-{seq:04d}"
+
+
 # ---------- 数据备份与还原 ----------
 def backup_data() -> str:
     """将整个 data/ 目录打包为 zip 备份文件，返回备份文件路径。"""

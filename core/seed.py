@@ -15,12 +15,16 @@ def seed_customers_if_empty() -> None:
         make_customer(
             name_cn="环球进口贸易公司",
             name_en="GLOBAL IMPORT TRADING CO., LTD.",
+            country_region="United States",
+            city="Los Angeles",
+            address_en="123 Harbor Street, Los Angeles, CA 90001, USA",
+            tax_no="US-EXAMPLE-000123",
+            contact_person="John Smith",
+            email="purchase@globalimport-example.com",
+            tel_phone="+1 213 555 0123",
             consignee="Global Import Trading Co., Ltd.\n123 Harbor Street, Los Angeles, CA 90001, USA",
             notify_party="Same as Consignee",
-            dest_country="United States",
             pod="Los Angeles, USA",
-            vat_id="US-EXAMPLE-000123",
-            email="purchase@globalimport-example.com",
             remark="示例客户，可编辑或删除",
         )
     ]
