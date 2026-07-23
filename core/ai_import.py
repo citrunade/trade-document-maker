@@ -1,10 +1,13 @@
 """
 AI 文件导入模块
-从 PDF / Excel / 图片 (JPG/PNG) 中提取客户信息、产品信息或单据明细，
+从 PDF / Excel / Word / 图片 (JPG/PNG) 中提取客户信息、产品信息或单据明细，
 通过智谱 AI (Zhipu) 完成 OCR 与结构化字段抽取。
 
 处理策略：
-- Excel：直接读取表格内容（本身已是结构化数据，无需 OCR），转为文本表格喂给文本模型。
+- Excel：直接读取表格文字内容（本身已是结构化数据，无需 OCR）。若表格文字内容过于稀疏
+  （例如产品信息以图片形式贴在单元格中，而非文字），自动改用表格中嵌入的第一张图片调用视觉模型。
+- Word (.docx)：提取段落与表格文字；若文字内容过于稀疏（例如整页以图片形式排版），
+  自动改用文档中嵌入的第一张图片调用视觉模型。
 - PDF：优先提取页面中的文字层（免费、快速）；如果某页没有文字层（如扫描件/图片型 PDF），
   才将该页渲染为图片调用视觉模型（费用更高，仅在必要时使用）。
 - JPG/PNG：直接调用视觉模型。
@@ -21,7 +24,10 @@ import fitz  # PyMuPDF
 from core import ai_client
 from core.models import make_customer, make_product, make_doc_line
 
-SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".jpg", ".jpeg", ".png"}
+SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".docx", ".jpg", ".jpeg", ".png"}
+
+# 判定"文字内容过于稀疏、需改用图片识别"的最小有效字符数阈值
+MIN_TEXT_CHARS = 20
 
 
 class AIImportError(Exception):
@@ -35,9 +41,15 @@ def get_file_kind(path: str) -> str:
         return "pdf"
     if ext in (".xlsx", ".xls"):
         return "xlsx"
+    if ext == ".docx":
+        return "docx"
+    if ext == ".doc":
+        raise AIImportError(
+            "不支持旧版 .doc 格式，请在 Word 中另存为 .docx 格式后重新导入。"
+        )
     if ext in (".jpg", ".jpeg", ".png"):
         return "image"
-    raise AIImportError(f"不支持的文件类型：{ext}（仅支持 PDF / Excel / JPG / PNG）")
+    raise AIImportError(f"不支持的文件类型：{ext}（仅支持 PDF / Excel / Word(.docx) / JPG / PNG）")
 
 
 # ---------------- PDF 内容提取 ----------------
@@ -69,6 +81,60 @@ def xlsx_to_markdown(path: str) -> str:
     import pandas as pd
     df = pd.read_excel(path, dtype=str).fillna("")
     return df.to_markdown(index=False)
+
+
+def xlsx_extract_images(path: str) -> list:
+    """
+    提取 Excel 文件中直接贴图/嵌入的图片（不含单元格文字），用于表格文字内容
+    过于稀疏时的视觉模型回退方案（例如产品目录以图片贴在表格里，而非文字）。
+    仅支持 .xlsx（openpyxl），.xls 旧格式不支持嵌入图片提取。
+    """
+    if os.path.splitext(path)[1].lower() != ".xlsx":
+        return []
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path)
+    except Exception:
+        return []
+    images = []
+    for ws in wb.worksheets:
+        for img in getattr(ws, "_images", []):
+            try:
+                images.append(img._data())
+            except Exception:
+                continue
+    return images
+
+
+# ---------------- Word 内容提取 ----------------
+def extract_docx_content(path: str) -> tuple:
+    """
+    提取 .docx 文件的段落与表格文字，以及所有嵌入图片。
+    返回 (text, images)：text 为拼接后的纯文字内容，images 为图片字节列表。
+    """
+    import docx
+    document = docx.Document(path)
+
+    parts = []
+    for para in document.paragraphs:
+        if para.text.strip():
+            parts.append(para.text.strip())
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+    text = "\n".join(parts)
+
+    images = []
+    for rel in document.part.rels.values():
+        if "image" in rel.reltype:
+            try:
+                images.append(rel.target_part.blob)
+            except Exception:
+                continue
+
+    return text, images
 
 
 # ---------------- JSON 解析辅助 ----------------
@@ -160,7 +226,26 @@ def _run_extraction(path: str, prompt: str, config: dict) -> str:
 
     if kind == "xlsx":
         table_text = xlsx_to_markdown(path)
-        return ai_client.extract_from_text(api_key, base_url, text_model, prompt, table_text)
+        if len(table_text.strip()) >= MIN_TEXT_CHARS:
+            return ai_client.extract_from_text(api_key, base_url, text_model, prompt, table_text)
+        # 表格文字内容过于稀疏（如产品信息以图片贴在单元格中），改用嵌入图片走视觉模型
+        images = xlsx_extract_images(path)
+        if images:
+            return ai_client.extract_from_image(api_key, base_url, vision_model, prompt, images[0], "image/png")
+        if table_text.strip():
+            return ai_client.extract_from_text(api_key, base_url, text_model, prompt, table_text)
+        raise AIImportError("无法从该 Excel 文件中读取任何可识别内容（表格为空且未找到嵌入图片）。")
+
+    if kind == "docx":
+        text, images = extract_docx_content(path)
+        if len(text.strip()) >= MIN_TEXT_CHARS:
+            return ai_client.extract_from_text(api_key, base_url, text_model, prompt, text)
+        # 文字内容过于稀疏（如整页以图片排版），改用嵌入图片走视觉模型
+        if images:
+            return ai_client.extract_from_image(api_key, base_url, vision_model, prompt, images[0], "image/png")
+        if text.strip():
+            return ai_client.extract_from_text(api_key, base_url, text_model, prompt, text)
+        raise AIImportError("无法从该 Word 文件中读取任何可识别内容（文档为空且未找到嵌入图片）。")
 
     if kind == "image":
         with open(path, "rb") as f:

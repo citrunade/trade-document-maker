@@ -13,7 +13,7 @@ from core import storage
 
 _notice_shown_this_session = False
 
-FILE_FILTER = "支持的文件 (*.pdf *.xlsx *.xls *.jpg *.jpeg *.png)"
+FILE_FILTER = "支持的文件 (*.pdf *.xlsx *.xls *.docx *.jpg *.jpeg *.png)"
 
 
 def show_privacy_notice_once(parent) -> bool:

@@ -35,6 +35,8 @@ a = Analysis(
         'PyQt6.sip',
         'fitz',
         'tabulate',
+        'docx',
+        'openpyxl',
     ],
     hookspath=[],
     hooksconfig={},
