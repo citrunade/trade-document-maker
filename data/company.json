@@ -14,8 +14,8 @@
   "default_pol": "Shenzhen, China",
   "default_incoterm": "FOB",
   "logo_path": "logo.png",
-  "zhipu_api_key": "",
-  "zhipu_base_url": "",
-  "zhipu_text_model": "",
-  "zhipu_vision_model": ""
+  "bailian_api_key": "",
+  "bailian_base_url": "",
+  "bailian_text_model": "",
+  "bailian_vision_model": ""
 }

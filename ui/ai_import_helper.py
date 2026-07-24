@@ -27,7 +27,7 @@ def show_privacy_notice_once(parent) -> bool:
         return True
     reply = QMessageBox.question(
         parent, "AI 导入提示",
-        "此功能会将您选择的文件内容发送至豆包 (Doubao) 云端 API 进行识别，需要联网。\n"
+        "此功能会将您选择的文件内容发送至阿里云百炼（Qwen）云端 API 进行识别，需要联网。\n"
         "本软件其余功能均为纯本地运行，仅此 AI 导入功能涉及网络传输。\n\n"
         "是否继续？",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,

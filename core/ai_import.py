@@ -1,7 +1,7 @@
 """
 AI 文件导入模块
 从 PDF / Excel / Word / 图片 (JPG/PNG) 中提取客户信息、产品信息或单据明细，
-通过智谱 AI (Zhipu) 完成 OCR 与结构化字段抽取。
+通过阿里云百炼（Qwen）完成 OCR 与结构化字段抽取。
 
 处理策略：
 - Excel：直接读取表格文字内容（本身已是结构化数据，无需 OCR）。若表格文字内容过于稀疏
@@ -177,9 +177,10 @@ CUSTOMER_PROMPT = """你是外贸单据信息提取助手。用户会提供一�
 只返回 JSON，不要包含任何其他说明文字。"""
 
 PRODUCT_PROMPT = """你是外贸单据信息提取助手。用户会提供一份产品规格表/报价单/产品目录文件内容，
-请从中提取所有产品条目，并仅以如下 JSON 数组格式返回（每个产品一个对象，找不到的字段填 0 或空字符串，不要编造信息）：
-[
-  {
+请从中提取所有产品条目，并仅以如下 JSON 对象格式返回（每个产品一个对象，找不到的字段填 0 或空字符串，不要编造信息）：
+{
+  "items": [
+    {
     "model_no": "型号",
     "name_cn": "中文品名",
     "name_en": "英文品名",
@@ -193,14 +194,16 @@ PRODUCT_PROMPT = """你是外贸单据信息提取助手。用户会提供一份
     "unit_price": 0.0,
     "currency": "USD",
     "remark": ""
-  }
-]
-只返回 JSON 数组，不要包含任何其他说明文字。"""
+    }
+  ]
+}
+只返回有效 JSON 对象，不要包含任何其他说明文字。"""
 
 DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提供一份采购订单(PO)或类似文件内容，
-请从中提取所有产品明细行，并仅以如下 JSON 数组格式返回（每行一个对象，找不到的字段填 0 或空字符串，不要编造信息）：
-[
-  {
+请从中提取所有产品明细行，并仅以如下 JSON 对象格式返回（每行一个对象，找不到的字段填 0 或空字符串，不要编造信息）：
+{
+  "items": [
+    {
     "model_no": "型号",
     "name_cn": "中文品名",
     "name_en": "英文品名",
@@ -208,19 +211,20 @@ DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提�
     "unit": "单位",
     "quantity": 0.0,
     "unit_price": 0.0
-  }
-]
-只返回 JSON 数组，不要包含任何其他说明文字。"""
+    }
+  ]
+}
+只返回有效 JSON 对象，不要包含任何其他说明文字。"""
 
 
 def _run_extraction(path: str, prompt: str, config: dict) -> str:
     """
-    根据文件类型选择合适的处理路径，调用智谱 AI API，返回模型的原始文本回复。
+    根据文件类型选择合适的处理路径，调用阿里云百炼 API，返回模型的原始文本回复。
     """
-    api_key = config.get("zhipu_api_key", "")
-    base_url = config.get("zhipu_base_url") or ai_client.DEFAULT_BASE_URL
-    text_model = config.get("zhipu_text_model") or ai_client.DEFAULT_TEXT_MODEL
-    vision_model = config.get("zhipu_vision_model") or ai_client.DEFAULT_VISION_MODEL
+    api_key = config.get("bailian_api_key", "")
+    base_url = config.get("bailian_base_url") or ai_client.DEFAULT_BASE_URL
+    text_model = config.get("bailian_text_model") or ai_client.DEFAULT_TEXT_MODEL
+    vision_model = config.get("bailian_vision_model") or ai_client.DEFAULT_VISION_MODEL
 
     kind = get_file_kind(path)
 
@@ -294,8 +298,11 @@ def import_products(path: str, config: dict) -> list:
     """从文件中提取产品列表，返回符合 make_product 字段结构的 dict 列表（未保存）"""
     raw = _run_extraction(path, PRODUCT_PROMPT, config)
     data = _parse_json_response(raw)
+    # 百炼 JSON Mode 顶层使用对象；兼容旧模型曾返回的直接数组格式。
+    if isinstance(data, dict):
+        data = data.get("items", [])
     if not isinstance(data, list):
-        raise AIImportError("AI 返回的产品信息格式不正确（应为 JSON 数组）。")
+        raise AIImportError("AI 返回的产品信息格式不正确（应包含 items 数组）。")
     products = []
     for item in data:
         if not isinstance(item, dict):
@@ -323,8 +330,10 @@ def import_document_lines(path: str, config: dict) -> list:
     """从采购订单(PO)等文件中提取单据明细行，返回符合 make_doc_line 字段结构的 dict 列表（未保存）"""
     raw = _run_extraction(path, DOCUMENT_LINES_PROMPT, config)
     data = _parse_json_response(raw)
+    if isinstance(data, dict):
+        data = data.get("items", [])
     if not isinstance(data, list):
-        raise AIImportError("AI 返回的明细信息格式不正确（应为 JSON 数组）。")
+        raise AIImportError("AI 返回的明细信息格式不正确（应包含 items 数组）。")
     lines = []
     for item in data:
         if not isinstance(item, dict):

@@ -55,10 +55,10 @@ DEFAULT_COMPANY = {
     "default_pol": "Shenzhen, China",
     "default_incoterm": "FOB",
     "logo_path": "logo.png",
-    "zhipu_api_key": "",
-    "zhipu_base_url": "",
-    "zhipu_text_model": "",
-    "zhipu_vision_model": "",
+    "bailian_api_key": "",
+    "bailian_base_url": "",
+    "bailian_text_model": "",
+    "bailian_vision_model": "",
 }
 
 
@@ -70,6 +70,16 @@ def load_company() -> dict:
         return data
     # 兼容旧版本数据文件：自动补全新增字段的默认值，避免 KeyError
     updated = False
+    # Zhipu Key不能用于百炼；迁移时删除废弃凭据，避免继续明文保留无用密钥。
+    for legacy_key in (
+        "zhipu_api_key",
+        "zhipu_base_url",
+        "zhipu_text_model",
+        "zhipu_vision_model",
+    ):
+        if legacy_key in data:
+            data.pop(legacy_key)
+            updated = True
     for key, value in DEFAULT_COMPANY.items():
         if key not in data:
             data[key] = value
