@@ -102,7 +102,6 @@ class TemplateCategoryPanel(QWidget):
     def __init__(self, category: str):
         super().__init__()
         self.category = category
-        self.templates = storage.load_templates()
         self._build_ui()
         self._refresh_list()
 
@@ -130,13 +129,10 @@ class TemplateCategoryPanel(QWidget):
         self.list_widget.doubleClicked.connect(self._edit)
         layout.addWidget(self.list_widget)
 
-    def _category_list(self) -> list:
-        return self.templates.setdefault(self.category, [])
-
     def _refresh_list(self):
-        self.templates = storage.load_templates()
+        templates = storage.load_templates()
         self.list_widget.clear()
-        for t in self._category_list():
+        for t in templates.get(self.category, []):
             item = QListWidgetItem(t.get("name") or "(未命名预设)")
             item.setData(Qt.ItemDataRole.UserRole, t)
             self.list_widget.addItem(item)
@@ -149,10 +145,10 @@ class TemplateCategoryPanel(QWidget):
         dialog = TemplateEditDialog(self, self.category)
         if dialog.exec():
             data = dialog.get_data()
-            storage.log_debug(f"新增模板预设 category={self.category} data={data}")
             try:
-                self._category_list().append(data)
-                storage.save_templates(self.templates)
+                templates = storage.load_templates()
+                templates.setdefault(self.category, []).append(data)
+                storage.save_templates(templates)
             except Exception as e:
                 storage.log_error(f"新增模板预设失败 category={self.category} data={data}", e)
                 QMessageBox.critical(self, "保存失败", f"保存预设时发生错误，已记录到 data/error.log：\n{e}")
@@ -167,9 +163,14 @@ class TemplateCategoryPanel(QWidget):
         dialog = TemplateEditDialog(self, self.category, template)
         if dialog.exec():
             data = dialog.get_data()
-            storage.log_debug(f"编辑模板预设 category={self.category} data={data}")
             try:
-                storage.save_templates(self.templates)
+                templates = storage.load_templates()
+                category_list = templates.setdefault(self.category, [])
+                for i, t in enumerate(category_list):
+                    if t["id"] == data["id"]:
+                        category_list[i] = data
+                        break
+                storage.save_templates(templates)
             except Exception as e:
                 storage.log_error(f"编辑模板预设失败 category={self.category} data={data}", e)
                 QMessageBox.critical(self, "保存失败", f"保存预设时发生错误，已记录到 data/error.log：\n{e}")
@@ -183,10 +184,16 @@ class TemplateCategoryPanel(QWidget):
             return
         reply = QMessageBox.question(self, "确认删除", f"确定要删除预设「{template.get('name')}」吗？")
         if reply == QMessageBox.StandardButton.Yes:
-            self.templates[self.category] = [
-                t for t in self._category_list() if t["id"] != template["id"]
-            ]
-            storage.save_templates(self.templates)
+            try:
+                templates = storage.load_templates()
+                templates[self.category] = [
+                    t for t in templates.get(self.category, []) if t["id"] != template["id"]
+                ]
+                storage.save_templates(templates)
+            except Exception as e:
+                storage.log_error(f"删除模板预设失败 category={self.category}", e)
+                QMessageBox.critical(self, "删除失败", f"删除预设时发生错误：\n{e}")
+                return
             self._refresh_list()
 
     def reload(self):
