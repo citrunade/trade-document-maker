@@ -42,21 +42,8 @@ def _write_json(filename: str, data: Any) -> None:
 COMPANY_FILE = "company.json"
 
 DEFAULT_COMPANY = {
-    "name_cn": "示例贸易有限公司",
-    "name_en": "SAMPLE TRADING CO., LTD.",
-    "address_cn": "中国广东省深圳市南山区科技园示例路1号",
-    "address_en": "No.1 Sample Road, Nanshan District, Shenzhen, Guangdong, China",
-    "phone": "+86 755 12345678",
-    "email": "sales@sampletrading.com",
-    "tax_id": "91440300MA5EXAMPLE",
-    "bank_name_cn": "中国银行深圳分行",
-    "bank_name_en": "BANK OF CHINA, SHENZHEN BRANCH",
-    "bank_account": "1234 5678 9012 3456",
-    "swift_code": "BKCHCNBJ400",
-    "bank_address_en": "No.88 Sample Ave, Shenzhen, China",
-    "default_pol": "Shenzhen, China",
-    "default_incoterm": "FOB",
     "logo_path": "logo.png",
+    "ui_theme": "light",
     "bailian_api_key": "",
     "bailian_base_url": "",
     "bailian_text_model": "",
@@ -72,12 +59,29 @@ def load_company() -> dict:
         return data
     # 兼容旧版本数据文件：自动补全新增字段的默认值，避免 KeyError
     updated = False
-    # Zhipu Key不能用于百炼；迁移时删除废弃凭据，避免继续明文保留无用密钥。
+    # Zhipu Key不能用于百炼；公司名称/地址/联系方式与银行信息已迁移至
+    # 「模板管理」页签的 Own/Banking 模板分类；POL/Incoterm 默认值已由
+    # Conditions 模板分类中每套预设各自的 incoterm 字段取代。
+    # 迁移时删除这些废弃字段，避免继续保留无用/误导性的数据。
     for legacy_key in (
         "zhipu_api_key",
         "zhipu_base_url",
         "zhipu_text_model",
         "zhipu_vision_model",
+        "name_cn",
+        "name_en",
+        "address_cn",
+        "address_en",
+        "phone",
+        "email",
+        "tax_id",
+        "bank_name_cn",
+        "bank_name_en",
+        "bank_account",
+        "swift_code",
+        "bank_address_en",
+        "default_pol",
+        "default_incoterm",
     ):
         if legacy_key in data:
             data.pop(legacy_key)

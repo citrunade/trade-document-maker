@@ -2,6 +2,7 @@
 客户档案管理界面：新增、编辑、删除、模糊搜索
 字段规范见 docs/客户主体信息设计文档.md（10 个核心字段 + 制单业务扩展字段）
 """
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QDialog,
@@ -141,6 +142,8 @@ class CustomersTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
         self.table.doubleClicked.connect(self._edit_customer)
         layout.addWidget(self.table)
 
@@ -157,19 +160,23 @@ class CustomersTab(QWidget):
 
     def _refresh_table(self):
         rows = self._filtered()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for r, c in enumerate(rows):
             for col_idx, (key, _) in enumerate(COLUMNS):
-                self.table.setItem(r, col_idx, QTableWidgetItem(str(c.get(key, ""))))
+                item = QTableWidgetItem(str(c.get(key, "")))
+                if col_idx == 0:
+                    # 客户编号列携带完整记录引用，使编辑/删除不受列排序影响
+                    item.setData(Qt.ItemDataRole.UserRole, c)
+                self.table.setItem(r, col_idx, item)
+        self.table.setSortingEnabled(True)
 
     def _selected_customer(self) -> dict:
         row = self.table.currentRow()
         if row < 0:
             return None
-        rows = self._filtered()
-        if row >= len(rows):
-            return None
-        return rows[row]
+        item = self.table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _add_customer(self):
         dialog = CustomerEditDialog(self)

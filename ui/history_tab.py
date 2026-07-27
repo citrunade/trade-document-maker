@@ -1,16 +1,18 @@
 """
-单据历史管理界面：按编号/客户搜索历史单据，支持一键复制新建、重新导出 PDF、删除
+单据历史管理界面：按编号/客户搜索历史单据，支持一键复制新建、重新导出（PDF/Word/Excel）、删除
 """
-import os
 import copy
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel, QPushButton, QComboBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QAbstractItemView,
 )
 
-from core import storage, pdf_export
+from core import storage
+from core.document_export import export_document_in_format
 from core.paths import get_exports_dir
+from ui.toast import notify
 
 COLUMNS = [
     ("doc_type", "类型"),
@@ -47,12 +49,16 @@ class HistoryTab(QWidget):
         refresh_btn.clicked.connect(self.reload)
         dup_btn = QPushButton("复制新建")
         dup_btn.clicked.connect(self._duplicate_selected)
-        export_btn = QPushButton("重新导出 PDF")
+        self.export_format = QComboBox()
+        self.export_format.addItems(["PDF", "Word", "Excel"])
+        export_btn = QPushButton("重新导出")
         export_btn.clicked.connect(self._reexport_selected)
         del_btn = QPushButton("删除")
         del_btn.clicked.connect(self._delete_selected)
         top.addWidget(refresh_btn)
         top.addWidget(dup_btn)
+        top.addWidget(QLabel("格式："))
+        top.addWidget(self.export_format)
         top.addWidget(export_btn)
         top.addWidget(del_btn)
         layout.addLayout(top)
@@ -62,6 +68,8 @@ class HistoryTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
         layout.addWidget(self.table)
 
     def _row_display(self, doc: dict) -> dict:
@@ -84,20 +92,24 @@ class HistoryTab(QWidget):
 
     def _refresh_table(self):
         rows = self._filtered()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for r, doc in enumerate(rows):
             display = self._row_display(doc)
             for col_idx, (key, _) in enumerate(COLUMNS):
-                self.table.setItem(r, col_idx, QTableWidgetItem(str(display.get(key, ""))))
+                item = QTableWidgetItem(str(display.get(key, "")))
+                if col_idx == 0:
+                    # 类型列携带完整记录引用，使复制/导出/删除不受列排序影响
+                    item.setData(Qt.ItemDataRole.UserRole, doc)
+                self.table.setItem(r, col_idx, item)
+        self.table.setSortingEnabled(True)
 
     def _selected_document(self) -> dict:
         row = self.table.currentRow()
         if row < 0:
             return None
-        rows = self._filtered()
-        if row >= len(rows):
-            return None
-        return rows[row]
+        item = self.table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _duplicate_selected(self):
         doc = self._selected_document()
@@ -111,23 +123,20 @@ class HistoryTab(QWidget):
         new_doc["id"] = new_id()
         new_doc["doc_number"] = ""
         self.on_duplicate_to_document(new_doc)
-        QMessageBox.information(self, "提示", "已复制到「制单」页面，请生成新的单据编号后保存")
+        notify(self, "✓ 已复制到「制单」页面，请生成新的单据编号后保存")
 
     def _reexport_selected(self):
         doc = self._selected_document()
         if not doc:
             QMessageBox.information(self, "提示", "请先选择一条历史单据")
             return
-        company = storage.load_company()
         export_dir = get_exports_dir()
         try:
-            path = pdf_export.export_document(
-                doc, os.path.join(export_dir, f"{doc.get('doc_number', 'DOC')}.pdf"), company
-            )
+            path = export_document_in_format(doc, self.export_format.currentText(), export_dir)
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"PDF 生成过程中发生错误：{e}")
+            QMessageBox.critical(self, "导出失败", f"文件生成过程中发生错误：{e}")
             return
-        QMessageBox.information(self, "导出成功", f"单据已导出至：\n{path}")
+        notify(self, f"✓ 已导出至 {path}")
 
     def _delete_selected(self):
         doc = self._selected_document()

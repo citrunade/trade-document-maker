@@ -6,14 +6,17 @@ import sys
 
 from PyQt6.QtWidgets import QApplication
 
+from core import storage
 from core.seed import seed_all
 from ui.main_window import MainWindow
+from ui.style import apply_theme
 
 
 def main():
     seed_all()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    apply_theme(app, storage.load_company().get("ui_theme", "light"))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

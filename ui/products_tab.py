@@ -1,6 +1,7 @@
 """
 产品物料库管理界面：新增、编辑、删除、模糊搜索、Excel 批量导入
 """
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QDialog,
@@ -10,6 +11,7 @@ from PyQt6.QtWidgets import (
 
 from core import storage
 from core.models import make_product
+from ui.toast import notify
 from ui.ai_import_helper import (
     show_privacy_notice_once, pick_import_file, run_ai_extraction, ImportReviewDialog,
 )
@@ -155,6 +157,8 @@ class ProductsTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
         self.table.doubleClicked.connect(self._edit_product)
         layout.addWidget(self.table)
 
@@ -171,19 +175,23 @@ class ProductsTab(QWidget):
 
     def _refresh_table(self):
         rows = self._filtered()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for r, p in enumerate(rows):
             for col_idx, (key, _) in enumerate(COLUMNS):
-                self.table.setItem(r, col_idx, QTableWidgetItem(str(p.get(key, ""))))
+                item = QTableWidgetItem(str(p.get(key, "")))
+                if col_idx == 0:
+                    # 型号列携带完整记录引用，使编辑/删除不受列排序影响
+                    item.setData(Qt.ItemDataRole.UserRole, p)
+                self.table.setItem(r, col_idx, item)
+        self.table.setSortingEnabled(True)
 
     def _selected_product(self) -> dict:
         row = self.table.currentRow()
         if row < 0:
             return None
-        rows = self._filtered()
-        if row >= len(rows):
-            return None
-        return rows[row]
+        item = self.table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _add_product(self):
         dialog = ProductEditDialog(self)
@@ -281,7 +289,7 @@ class ProductsTab(QWidget):
 
         storage.save_products(self.products)
         self._refresh_table()
-        QMessageBox.information(self, "导入完成", f"成功导入 {imported} 条物料数据")
+        notify(self, f"✓ 成功导入 {imported} 条物料数据")
 
     def _ai_import_products(self):
         if not show_privacy_notice_once(self):
@@ -330,7 +338,7 @@ class ProductsTab(QWidget):
 
         storage.save_products(self.products)
         self._refresh_table()
-        QMessageBox.information(self, "导入完成", f"成功导入 {added} 条产品数据")
+        notify(self, f"✓ 成功导入 {added} 条产品数据")
 
     def reload(self):
         self.products = storage.load_products()

@@ -1,5 +1,7 @@
 """
-设置界面：我方公司信息、Logo、银行信息、默认港口/贸易术语
+设置界面：Logo、AI 导入 API Key、数据备份与还原
+（公司名称/地址/联系方式已迁移至「模板管理」页签的 Own 分类；
+银行信息已迁移至「模板管理」页签的 Banking 分类）
 """
 import os
 import shutil
@@ -8,14 +10,16 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
-    QPushButton, QGroupBox, QComboBox, QFileDialog, QMessageBox, QScrollArea,
+    QPushButton, QGroupBox, QComboBox, QFileDialog, QMessageBox, QScrollArea, QApplication,
 )
 
 from core import storage, ai_client
 from core.paths import get_data_path, get_backups_dir
+from ui.style import apply_theme
+from ui.toast import notify
 
-
-INCOTERMS = ["FOB", "CIF", "CFR", "EXW", "DAP", "DDP", "FCA", "CPT", "CIP"]
+THEME_LABELS = {"light": "浅色", "dark": "深色"}
+THEME_KEYS = {v: k for k, v in THEME_LABELS.items()}
 
 
 class SettingsTab(QWidget):
@@ -55,49 +59,29 @@ class SettingsTab(QWidget):
         logo_layout.addStretch()
         layout.addWidget(logo_box)
 
-        # --- 基本信息 ---
-        basic_box = QGroupBox("公司基本信息")
-        form = QFormLayout(basic_box)
-        self.name_cn = QLineEdit()
-        self.name_en = QLineEdit()
-        self.address_cn = QLineEdit()
-        self.address_en = QLineEdit()
-        self.phone = QLineEdit()
-        self.email = QLineEdit()
-        self.tax_id = QLineEdit()
-        form.addRow("公司中文名称：", self.name_cn)
-        form.addRow("公司英文名称：", self.name_en)
-        form.addRow("中文地址：", self.address_cn)
-        form.addRow("英文地址：", self.address_en)
-        form.addRow("电话：", self.phone)
-        form.addRow("邮箱：", self.email)
-        form.addRow("税号：", self.tax_id)
-        layout.addWidget(basic_box)
+        info_hint = QLabel(
+            "公司名称/地址/联系方式现已迁移至「模板管理」页签的 Own 分类中管理（支持保存多套预设，制单时按需选择）。\n"
+            "银行信息现已迁移至「模板管理」页签的 Banking 分类中管理。"
+        )
+        info_hint.setWordWrap(True)
+        info_hint.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(info_hint)
 
-        # --- 银行信息 ---
-        bank_box = QGroupBox("Bank Detail 银行信息")
-        bform = QFormLayout(bank_box)
-        self.bank_name_cn = QLineEdit()
-        self.bank_name_en = QLineEdit()
-        self.bank_account = QLineEdit()
-        self.swift_code = QLineEdit()
-        self.bank_address_en = QLineEdit()
-        bform.addRow("开户行（中文）：", self.bank_name_cn)
-        bform.addRow("开户行（英文）：", self.bank_name_en)
-        bform.addRow("账号：", self.bank_account)
-        bform.addRow("SWIFT Code：", self.swift_code)
-        bform.addRow("银行地址（英文）：", self.bank_address_en)
-        layout.addWidget(bank_box)
-
-        # --- 默认贸易设置 ---
-        trade_box = QGroupBox("默认贸易设置")
-        tform = QFormLayout(trade_box)
-        self.default_pol = QLineEdit()
-        self.default_incoterm = QComboBox()
-        self.default_incoterm.addItems(INCOTERMS)
-        tform.addRow("默认离岸港口 (POL)：", self.default_pol)
-        tform.addRow("默认贸易术语：", self.default_incoterm)
-        layout.addWidget(trade_box)
+        # --- 界面主题 ---
+        theme_box = QGroupBox("界面主题")
+        theme_layout = QHBoxLayout(theme_box)
+        theme_hint = QLabel(
+            "本设置独立于 Windows 系统的深色模式，切换后立即生效，"
+            "可避免系统深色模式与软件界面显示不一致导致的花屏问题。"
+        )
+        theme_hint.setWordWrap(True)
+        theme_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(list(THEME_LABELS.values()))
+        self.theme_combo.currentTextChanged.connect(self._on_theme_changed)
+        theme_layout.addWidget(self.theme_combo)
+        theme_layout.addWidget(theme_hint, stretch=1)
+        layout.addWidget(theme_box)
 
         # --- AI 导入（阿里云百炼 / Qwen） ---
         ai_box = QGroupBox("AI 文件导入设置（阿里云百炼 / Qwen）")
@@ -152,21 +136,9 @@ class SettingsTab(QWidget):
 
     def _load_into_form(self):
         c = self.company
-        self.name_cn.setText(c.get("name_cn", ""))
-        self.name_en.setText(c.get("name_en", ""))
-        self.address_cn.setText(c.get("address_cn", ""))
-        self.address_en.setText(c.get("address_en", ""))
-        self.phone.setText(c.get("phone", ""))
-        self.email.setText(c.get("email", ""))
-        self.tax_id.setText(c.get("tax_id", ""))
-        self.bank_name_cn.setText(c.get("bank_name_cn", ""))
-        self.bank_name_en.setText(c.get("bank_name_en", ""))
-        self.bank_account.setText(c.get("bank_account", ""))
-        self.swift_code.setText(c.get("swift_code", ""))
-        self.bank_address_en.setText(c.get("bank_address_en", ""))
-        self.default_pol.setText(c.get("default_pol", ""))
-        idx = self.default_incoterm.findText(c.get("default_incoterm", "FOB"))
-        self.default_incoterm.setCurrentIndex(max(idx, 0))
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.setCurrentText(THEME_LABELS.get(c.get("ui_theme", "light"), "浅色"))
+        self.theme_combo.blockSignals(False)
         self.bailian_api_key.setText(c.get("bailian_api_key", ""))
         self.bailian_base_url.setText(c.get("bailian_base_url", ""))
         self.bailian_text_model.setText(c.get("bailian_text_model", ""))
@@ -212,29 +184,24 @@ class SettingsTab(QWidget):
             os.remove(dest)
         self._refresh_logo_preview()
 
+    def _on_theme_changed(self, label: str):
+        theme_key = THEME_KEYS.get(label, "light")
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, theme_key)
+        self.company["ui_theme"] = theme_key
+        storage.save_company(self.company)
+        notify(self, f"✓ 已切换为{label}主题")
+
     def _save(self):
         self.company.update({
-            "name_cn": self.name_cn.text().strip(),
-            "name_en": self.name_en.text().strip(),
-            "address_cn": self.address_cn.text().strip(),
-            "address_en": self.address_en.text().strip(),
-            "phone": self.phone.text().strip(),
-            "email": self.email.text().strip(),
-            "tax_id": self.tax_id.text().strip(),
-            "bank_name_cn": self.bank_name_cn.text().strip(),
-            "bank_name_en": self.bank_name_en.text().strip(),
-            "bank_account": self.bank_account.text().strip(),
-            "swift_code": self.swift_code.text().strip(),
-            "bank_address_en": self.bank_address_en.text().strip(),
-            "default_pol": self.default_pol.text().strip(),
-            "default_incoterm": self.default_incoterm.currentText(),
             "bailian_api_key": self.bailian_api_key.text().strip(),
             "bailian_base_url": self.bailian_base_url.text().strip(),
             "bailian_text_model": self.bailian_text_model.text().strip(),
             "bailian_vision_model": self.bailian_vision_model.text().strip(),
         })
         storage.save_company(self.company)
-        QMessageBox.information(self, "提示", "设置已保存")
+        notify(self, "✓ 设置已保存")
 
     def _test_ai_connection(self):
         api_key = self.bailian_api_key.text().strip()
@@ -245,7 +212,7 @@ class SettingsTab(QWidget):
         except ai_client.AIClientError as e:
             QMessageBox.warning(self, "连接失败", str(e))
             return
-        QMessageBox.information(self, "连接成功", "阿里云百炼连接测试成功！")
+        notify(self, "✓ 阿里云百炼连接测试成功")
 
     def _backup_data(self):
         try:
@@ -253,7 +220,7 @@ class SettingsTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "备份失败", f"备份过程中发生错误：{e}")
             return
-        QMessageBox.information(self, "备份完成", f"数据已备份至：\n{archive_path}")
+        notify(self, f"✓ 数据已备份至 {archive_path}")
 
     def _restore_data(self):
         path, _ = QFileDialog.getOpenFileName(

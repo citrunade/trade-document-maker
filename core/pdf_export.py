@@ -349,7 +349,7 @@ def _make_doc_template(filepath: str):
     )
 
 
-def export_document(doc: dict, filepath: str, company: dict) -> str:
+def export_document(doc: dict, filepath: str) -> str:
     """
     统一单据导出入口。doc['doc_type'] 决定标题与是否显示价格（PL 隐藏价格）。
     doc 中的 own_snapshot/delivery_snapshot/conditions_snapshot/banking_snapshot
@@ -413,19 +413,3 @@ def export_document(doc: dict, filepath: str, company: dict) -> str:
     template = _make_doc_template(filepath)
     template.build(elements, canvasmaker=_canvas_factory(context))
     return filepath
-
-
-# ---------------- 向后兼容别名（历史单据/外部调用可能仍使用旧函数名） ----------------
-def export_pi(doc: dict, filepath: str, company: dict) -> str:
-    doc = dict(doc); doc["doc_type"] = "PI"
-    return export_document(doc, filepath, company)
-
-
-def export_ci(doc: dict, filepath: str, company: dict) -> str:
-    doc = dict(doc); doc["doc_type"] = "CI"
-    return export_document(doc, filepath, company)
-
-
-def export_pl(doc: dict, filepath: str, company: dict) -> str:
-    doc = dict(doc); doc["doc_type"] = "PL"
-    return export_document(doc, filepath, company)

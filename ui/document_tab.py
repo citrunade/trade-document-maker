@@ -2,9 +2,8 @@
 制单界面：选择单据类型(PI/CI/PL) -> 选择客户(收件方) -> 选择四类模板预设(Own/收货地址/条款/银行信息)
 -> 添加产品明细 -> 实时联动计算 -> 生成/导出单据。
 一次只生成一份单据（标题按类型不同，格式统一），不再同时生成三份。
+支持导出为 PDF / Word / Excel 三种格式（core.document_export 统一分发）。
 """
-import os
-
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
@@ -13,9 +12,11 @@ from PyQt6.QtWidgets import (
     QDateEdit, QAbstractItemView, QListWidget, QListWidgetItem,
 )
 
-from core import storage, calc, pdf_export
+from core import storage, calc
+from core.document_export import export_document_in_format
 from core.models import make_document, make_doc_line
 from core.paths import get_exports_dir
+from ui.toast import notify
 from ui.ai_import_helper import (
     show_privacy_notice_once, pick_import_file, run_ai_extraction, ImportReviewDialog,
 )
@@ -111,6 +112,8 @@ class DocumentTab(QWidget):
 
         header_box = QGroupBox("单据基本信息")
         form = QFormLayout(header_box)
+        form.setVerticalSpacing(10)
+        form.setHorizontalSpacing(12)
 
         type_row = QHBoxLayout()
         self.doc_type = QComboBox()
@@ -119,12 +122,11 @@ class DocumentTab(QWidget):
         self.doc_number = QLineEdit()
         gen_btn = QPushButton("生成新编号")
         gen_btn.clicked.connect(self._generate_number)
-        type_row.addWidget(QLabel("单据类型："))
         type_row.addWidget(self.doc_type)
-        type_row.addWidget(QLabel("单据编号："))
+        type_row.addWidget(QLabel("编号："))
         type_row.addWidget(self.doc_number)
         type_row.addWidget(gen_btn)
-        form.addRow(type_row)
+        form.addRow("单据类型：", type_row)
 
         self.date_edit = QDateEdit(QDate.currentDate())
         self.date_edit.setCalendarPopup(True)
@@ -135,10 +137,8 @@ class DocumentTab(QWidget):
         self.customer_combo.currentIndexChanged.connect(self._on_customer_changed)
         form.addRow("收件方 (Buyer/Seller)：", self.customer_combo)
 
-        po_row = QHBoxLayout()
         self.destination = QLineEdit()
-        po_row.addWidget(QLabel("Destination：")); po_row.addWidget(self.destination)
-        form.addRow(po_row)
+        form.addRow("Destination：", self.destination)
 
         validity_row = QHBoxLayout()
         self.validity_start = QDateEdit(QDate.currentDate())
@@ -147,13 +147,20 @@ class DocumentTab(QWidget):
         self.validity_end = QDateEdit(QDate.currentDate().addDays(30))
         self.validity_end.setCalendarPopup(True)
         self.validity_end.setDisplayFormat("yyyy-MM-dd")
+        validity_row.addWidget(self.validity_start)
+        validity_row.addWidget(QLabel("至"))
+        validity_row.addWidget(self.validity_end)
+        form.addRow("Validity 有效期：", validity_row)
+
         self.currency = QComboBox()
         self.currency.addItems(CURRENCIES)
         self.currency.currentTextChanged.connect(self._recalculate)
-        validity_row.addWidget(QLabel("Validity Start：")); validity_row.addWidget(self.validity_start)
-        validity_row.addWidget(QLabel("Validity End：")); validity_row.addWidget(self.validity_end)
-        validity_row.addWidget(QLabel("币种：")); validity_row.addWidget(self.currency)
-        form.addRow(validity_row)
+        form.addRow("币种：", self.currency)
+
+        line = QLabel()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #E5E9ED;")
+        form.addRow(line)
 
         # ---- 四类模板预设选择 ----
         template_row = QHBoxLayout()
@@ -161,13 +168,13 @@ class DocumentTab(QWidget):
         self.delivery_combo = QComboBox()
         self.conditions_combo = QComboBox()
         self.banking_combo = QComboBox()
-        template_row.addWidget(QLabel("Own：")); template_row.addWidget(self.own_combo)
-        template_row.addWidget(QLabel("Delivery：")); template_row.addWidget(self.delivery_combo)
-        template_row.addWidget(QLabel("Conditions：")); template_row.addWidget(self.conditions_combo)
-        template_row.addWidget(QLabel("Banking：")); template_row.addWidget(self.banking_combo)
+        for label, combo in (("Own", self.own_combo), ("Delivery", self.delivery_combo),
+                             ("Conditions", self.conditions_combo), ("Banking", self.banking_combo)):
+            template_row.addWidget(QLabel(f"{label}："))
+            template_row.addWidget(combo)
         form.addRow("适用模板：", template_row)
-        manage_hint = QLabel("模板预设可在「模板管理」页签中新增/编辑")
-        manage_hint.setStyleSheet("color: #888; font-size: 11px;")
+        manage_hint = QLabel("↳ 模板预设可在「模板管理」页签中新增/编辑")
+        manage_hint.setStyleSheet("color: #96A2AC; font-size: 11px;")
         form.addRow("", manage_hint)
 
         self.remark = QLineEdit()
@@ -191,6 +198,7 @@ class DocumentTab(QWidget):
         self.table = QTableWidget(0, len(FINANCIAL_LINE_COLUMNS))
         self.table.setHorizontalHeaderLabels(FINANCIAL_LINE_COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setAlternatingRowColors(True)
         lines_layout.addWidget(self.table)
         layout.addWidget(lines_box)
 
@@ -211,10 +219,14 @@ class DocumentTab(QWidget):
         new_btn.clicked.connect(self._new_document)
         save_btn = QPushButton("保存到历史")
         save_btn.clicked.connect(self._save_document)
-        export_btn = QPushButton("导出 PDF")
-        export_btn.clicked.connect(self._export_pdf)
+        self.export_format = QComboBox()
+        self.export_format.addItems(["PDF", "Word", "Excel"])
+        export_btn = QPushButton("导出")
+        export_btn.clicked.connect(self._export_document)
         action_row.addWidget(new_btn)
         action_row.addWidget(save_btn)
+        action_row.addWidget(QLabel("导出格式："))
+        action_row.addWidget(self.export_format)
         action_row.addWidget(export_btn)
         action_row.addStretch()
         layout.addLayout(action_row)
@@ -459,9 +471,9 @@ class DocumentTab(QWidget):
         else:
             documents.append(doc)
         storage.save_documents(documents)
-        QMessageBox.information(self, "提示", "单据已保存到历史记录")
+        notify(self, f"✓ 单据 {doc.get('doc_number', '')} 已保存到历史记录")
 
-    def _export_pdf(self):
+    def _export_document(self):
         doc = self._collect_document()
         if not doc.get("customer_id"):
             QMessageBox.warning(self, "提示", "请先选择收件方")
@@ -473,15 +485,14 @@ class DocumentTab(QWidget):
             self._generate_number()
             doc = self._collect_document()
 
-        company = storage.load_company()
         export_dir = get_exports_dir()
         try:
-            path = pdf_export.export_document(doc, os.path.join(export_dir, f"{doc['doc_number']}.pdf"), company)
+            path = export_document_in_format(doc, self.export_format.currentText(), export_dir)
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"PDF 生成过程中发生错误：{e}")
+            QMessageBox.critical(self, "导出失败", f"文件生成过程中发生错误：{e}")
             return
 
-        QMessageBox.information(self, "导出成功", f"单据已导出至：\n{path}")
+        notify(self, f"✓ 已导出至 {path}")
 
     def get_current_document(self) -> dict:
         """供导出模块调用，获取当前联动计算后的完整单据数据"""
