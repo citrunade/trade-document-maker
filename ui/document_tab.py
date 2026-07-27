@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QDoubleSpinBox, QDialog, QDialogButtonBox, QMessageBox, QGroupBox,
-    QDateEdit, QAbstractItemView, QListWidget, QListWidgetItem,
+    QDateEdit, QAbstractItemView, QListWidget, QListWidgetItem, QScrollArea,
 )
 
 from core import storage, calc
@@ -17,6 +17,7 @@ from core.document_export import export_document_in_format
 from core.models import make_document, make_doc_line
 from core.paths import get_exports_dir
 from ui.toast import notify
+from ui.style import disable_accidental_scroll_edits
 from ui.ai_import_helper import (
     show_privacy_notice_once, pick_import_file, run_ai_extraction, ImportReviewDialog,
 )
@@ -26,12 +27,12 @@ DOC_TITLES = {"PI": "PROFORMA INVOICE 形式发票", "CI": "COMMERCIAL INVOICE �
 
 # 财务类单据（PI/CI）显示单价与金额；PL 不显示价格信息
 FINANCIAL_LINE_COLUMNS = [
-    "Item", "Description 品名", "Qty 数量", "Unit 单位", "Unit Price 单价", "Total Price 金额",
-    "COO", "Net Weight 净重(kg)", "Total N.W.(kg)", "HS Code", "Remark", "操作",
+    "No.", "Description", "Qty", "Unit", "Unit Price", "Total Price",
+    "COO", "Net Weight", "Total N.W.", "HS Code", "Remark", "操作",
 ]
 PL_LINE_COLUMNS = [
-    "Item", "Description 品名", "Qty 数量", "Unit 单位",
-    "COO", "Net Weight 净重(kg)", "Total N.W.(kg)", "HS Code", "Remark", "操作",
+    "No.", "Description", "Qty", "Unit",
+    "COO", "Net Weight", "Total N.W.", "HS Code", "Remark", "操作",
 ]
 
 
@@ -108,7 +109,14 @@ class DocumentTab(QWidget):
 
     # ---------------- UI construction ----------------
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        scroll.setWidget(container)
+        layout = QVBoxLayout(container)
 
         header_box = QGroupBox("单据基本信息")
         form = QFormLayout(header_box)
@@ -147,6 +155,10 @@ class DocumentTab(QWidget):
         self.validity_end = QDateEdit(QDate.currentDate().addDays(30))
         self.validity_end.setCalendarPopup(True)
         self.validity_end.setDisplayFormat("yyyy-MM-dd")
+        # Start 变化时 End 自动保持 "Start + 30 天"，避免改了开始日期却忘记同步调整结束日期
+        self.validity_start.dateChanged.connect(
+            lambda d: self.validity_end.setDate(d.addDays(30))
+        )
         validity_row.addWidget(self.validity_start)
         validity_row.addWidget(QLabel("至"))
         validity_row.addWidget(self.validity_end)
@@ -180,7 +192,7 @@ class DocumentTab(QWidget):
         self.remark = QLineEdit()
         form.addRow("备注：", self.remark)
 
-        layout.addWidget(header_box)
+        layout.addWidget(header_box, 0)
 
         # ---- 产品明细 ----
         lines_box = QGroupBox("产品明细")
@@ -197,10 +209,13 @@ class DocumentTab(QWidget):
 
         self.table = QTableWidget(0, len(FINANCIAL_LINE_COLUMNS))
         self.table.setHorizontalHeaderLabels(FINANCIAL_LINE_COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setAlternatingRowColors(True)
+        # 保证产品明细表始终至少能看到约 6 行，避免被上方较长的表单挤到只剩一行
+        self.table.setMinimumHeight(240)
         lines_layout.addWidget(self.table)
-        layout.addWidget(lines_box)
+        # 拉伸系数=1，使产品明细表优先获得多余的垂直空间，
+        # 而不是让上方表单的每一行被拉伸得过高（这正是之前"表格只显示一行"的原因）
+        layout.addWidget(lines_box, 1)
 
         # ---- 汇总 ----
         totals_box = QGroupBox("汇总")
@@ -211,7 +226,7 @@ class DocumentTab(QWidget):
         self.words_label.setWordWrap(True)
         totals_layout.addWidget(self.totals_label)
         totals_layout.addWidget(self.words_label)
-        layout.addWidget(totals_box)
+        layout.addWidget(totals_box, 0)
 
         # ---- 操作 ----
         action_row = QHBoxLayout()
@@ -367,11 +382,28 @@ class DocumentTab(QWidget):
         else:
             self.words_label.setText("")
 
+    def _apply_column_sizing(self, columns: list):
+        """
+        表头文字长短不一，若所有列均等分宽度（Stretch），较长的表头文字会被裁剪。
+        让"Description"这类需要较多空间的列拉伸，其余较短的列按内容自适应宽度。
+        """
+        header = self.table.horizontalHeader()
+        narrow_columns = {"No.", "Qty", "Unit", "COO", "HS Code", "操作"}
+        for col, name in enumerate(columns):
+            if name in narrow_columns:
+                header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+            elif name == "Description":
+                header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+            else:
+                header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+                self.table.setColumnWidth(col, 90)
+
     def _rebuild_table(self, computed_lines: list):
         financial = self._is_financial()
         columns = FINANCIAL_LINE_COLUMNS if financial else PL_LINE_COLUMNS
         self.table.setColumnCount(len(columns))
         self.table.setHorizontalHeaderLabels(columns)
+        self._apply_column_sizing(columns)
         self.table.setRowCount(len(computed_lines))
 
         for row, line in enumerate(computed_lines):
@@ -389,6 +421,7 @@ class DocumentTab(QWidget):
             qty_spin.setDecimals(2)
             qty_spin.setValue(line.get("quantity", 0.0))
             qty_spin.valueChanged.connect(self._on_qty_or_price_changed)
+            disable_accidental_scroll_edits(qty_spin)
             self.table.setCellWidget(row, col, qty_spin); col += 1
 
             self.table.setItem(row, col, QTableWidgetItem(line.get("unit", ""))); col += 1
@@ -399,6 +432,7 @@ class DocumentTab(QWidget):
                 price_spin.setDecimals(2)
                 price_spin.setValue(line.get("unit_price", 0.0))
                 price_spin.valueChanged.connect(self._on_qty_or_price_changed)
+                disable_accidental_scroll_edits(price_spin)
                 self.table.setCellWidget(row, col, price_spin); col += 1
 
                 self.table.setItem(row, col, QTableWidgetItem(f"{line['subtotal']:.2f}")); col += 1

@@ -119,6 +119,7 @@ class CustomersTab(QWidget):
         top = QHBoxLayout()
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("按编号/名称/国家/城市/邮箱/电话模糊搜索…")
+        self.search_box.setMinimumWidth(200)
         self.search_box.textChanged.connect(self._refresh_table)
         top.addWidget(QLabel("搜索："))
         top.addWidget(self.search_box)

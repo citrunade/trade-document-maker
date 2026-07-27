@@ -7,7 +7,9 @@
 解决方式：应用内提供独立于系统设置的主题开关，同时设置 QPalette 与 QSS，
 确保所有控件（包括原生弹窗）风格一致，不再依赖/跟随系统的深色模式设置。
 """
+from PyQt6.QtCore import QObject, QEvent
 from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtWidgets import QComboBox, QAbstractSpinBox
 from PyQt6.QtCore import Qt
 
 ACCENT = "#5B9BD5"
@@ -249,3 +251,42 @@ def apply_theme(app, theme: str = "light") -> None:
     colors = _THEMES.get(theme, _THEMES["light"])
     app.setPalette(_build_palette(colors))
     app.setStyleSheet(_build_stylesheet(colors))
+
+
+def fix_combo_dropdowns(root_widget) -> None:
+    """
+    修复下拉框菜单文字被裁剪的问题：Qt 默认会把下拉弹出列表的宽度限制为
+    下拉框控件"当前显示"的宽度，而不是按最长选项内容自适应——当多个下拉框
+    挤在同一行（如制单页面的四个模板选择框）时，选项文字就会被截断。
+    在窗口构建完成后统一调用一次即可，对性能无影响。
+    """
+    for combo in root_widget.findChildren(QComboBox):
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        # sizeHint() 在 AdjustToContents 策略下已正确反映最长选项所需宽度，
+        # 直接复用它来保证弹出列表不会比选项文字本身更窄。
+        combo.view().setMinimumWidth(combo.sizeHint().width())
+
+
+class _NoScrollWhileUnfocused(QObject):
+    """
+    Qt 默认行为：鼠标悬停在下拉框/日期框/数字框上滚动鼠标滚轮时，
+    会直接改变该控件的值，而不是滚动页面——如果表单被放进了可滚动区域
+    （如制单页面），用户想滚动整页时，鼠标一旦划过某个日期框，
+    就会在不知情的情况下把日期/数值改掉（例如年份被意外+1）。
+    这里拦截未获得键盘焦点时的滚轮事件，交还给外层滚动区域处理，
+    只有点击/Tab 选中控件后，滚轮才会正常调整其值。
+    """
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return False
+
+
+def disable_accidental_scroll_edits(root_widget) -> None:
+    """在窗口构建完成后调用一次，为所有下拉框/日期框/数字框安装上述滚轮保护。"""
+    scroll_filter = _NoScrollWhileUnfocused(root_widget)
+    root_widget._no_scroll_filter = scroll_filter  # 保持引用，防止被垃圾回收
+    for widget in root_widget.findChildren((QComboBox, QAbstractSpinBox)):
+        widget.installEventFilter(scroll_filter)

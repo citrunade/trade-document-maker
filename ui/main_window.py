@@ -9,6 +9,7 @@ from ui.products_tab import ProductsTab
 from ui.document_tab import DocumentTab
 from ui.history_tab import HistoryTab
 from ui.templates_tab import TemplatesTab
+from ui.style import fix_combo_dropdowns, disable_accidental_scroll_edits
 
 
 class MainWindow(QMainWindow):
@@ -36,12 +37,18 @@ class MainWindow(QMainWindow):
 
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
+        # 修复下拉框菜单文字被裁剪的问题（详见 ui/style.py 中的说明）
+        fix_combo_dropdowns(self)
+        # 防止在可滚动页面内滚动鼠标滚轮时，意外改动未获得焦点的下拉框/日期框/数字框的值
+        disable_accidental_scroll_edits(self)
+
     def _on_tab_changed(self, index: int):
         widget = self.tabs.widget(index)
         # 切换到制单页时刷新客户下拉列表与模板下拉列表，避免其他页改动后未同步
         if widget is self.document_tab:
             self.document_tab._refresh_customer_combo()
             self.document_tab._refresh_template_combos()
+            fix_combo_dropdowns(self.document_tab)
         # 切换到历史页时刷新列表，确保新保存的单据可见
         elif widget is self.history_tab:
             self.history_tab.reload()
