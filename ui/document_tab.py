@@ -1,15 +1,17 @@
 """
-制单界面：选择客户 -> 添加产品明细 -> 填写运输/条款信息 -> 实时联动计算
-生成的单据主记录同时驱动 PI / CI / PL 三份单据的导出（见 ui/export_tab.py，阶段三实现）。
+制单界面：选择单据类型(PI/CI/PL) -> 选择客户(收件方) -> 选择四类模板预设(Own/收货地址/条款/银行信息)
+-> 添加产品明细 -> 实时联动计算 -> 生成/导出单据。
+一次只生成一份单据（标题按类型不同，格式统一），不再同时生成三份。
 """
-from PyQt6.QtCore import Qt
+import os
+
+from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
     QDoubleSpinBox, QDialog, QDialogButtonBox, QMessageBox, QGroupBox,
     QDateEdit, QAbstractItemView, QListWidget, QListWidgetItem,
 )
-from PyQt6.QtCore import QDate
 
 from core import storage, calc, pdf_export
 from core.models import make_document, make_doc_line
@@ -17,22 +19,26 @@ from core.paths import get_exports_dir
 from ui.ai_import_helper import (
     show_privacy_notice_once, pick_import_file, run_ai_extraction, ImportReviewDialog,
 )
-import os
 
-INCOTERMS = ["FOB", "CIF", "CFR", "EXW", "DAP", "DDP", "FCA", "CPT", "CIP"]
-CURRENCIES = ["USD", "EUR", "RMB"]
+CURRENCIES = ["USD", "EUR", "RMB", "SGD"]
+DOC_TITLES = {"PI": "PROFORMA INVOICE 形式发票", "CI": "COMMERCIAL INVOICE 商业发票", "PL": "PACKING LIST 装箱单"}
+
+# 财务类单据（PI/CI）显示单价与金额；PL 不显示价格信息
+FINANCIAL_LINE_COLUMNS = [
+    "Item", "Description 品名", "Qty 数量", "Unit 单位", "Unit Price 单价", "Total Price 金额",
+    "COO", "Net Weight 净重(kg)", "Total N.W.(kg)", "HS Code", "Remark", "操作",
+]
+PL_LINE_COLUMNS = [
+    "Item", "Description 品名", "Qty 数量", "Unit 单位",
+    "COO", "Net Weight 净重(kg)", "Total N.W.(kg)", "HS Code", "Remark", "操作",
+]
+
 
 def _safe_float(value) -> float:
     try:
         return float(value)
     except (ValueError, TypeError):
         return 0.0
-
-
-LINE_COLUMNS = [
-    "型号", "中文品名", "英文品名", "数量", "单价", "小计",
-    "净重合计(kg)", "毛重合计(kg)", "体积合计(CBM)", "操作",
-]
 
 
 class ProductPickerDialog(QDialog):
@@ -94,55 +100,76 @@ class DocumentTab(QWidget):
         self.document = make_document()
         self._build_ui()
         self._refresh_customer_combo()
+        self._refresh_template_combos()
+        self._generate_number()
+        self._set_default_dates()
         self._recalculate()
 
     # ---------------- UI construction ----------------
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
-        header_box = QGroupBox("客户与单据信息")
+        header_box = QGroupBox("单据基本信息")
         form = QFormLayout(header_box)
 
-        self.customer_combo = QComboBox()
-        self.customer_combo.currentIndexChanged.connect(self._on_customer_changed)
-        form.addRow("客户：", self.customer_combo)
-
-        num_row = QHBoxLayout()
-        self.pi_number = QLineEdit()
-        self.ci_number = QLineEdit()
-        self.pl_number = QLineEdit()
-        gen_btn = QPushButton("自动生成三份单据编号")
-        gen_btn.clicked.connect(self._generate_numbers)
-        num_row.addWidget(QLabel("PI#")); num_row.addWidget(self.pi_number)
-        num_row.addWidget(QLabel("CI#")); num_row.addWidget(self.ci_number)
-        num_row.addWidget(QLabel("PL#")); num_row.addWidget(self.pl_number)
-        num_row.addWidget(gen_btn)
-        form.addRow("单据编号：", num_row)
+        type_row = QHBoxLayout()
+        self.doc_type = QComboBox()
+        self.doc_type.addItems(["PI", "CI", "PL"])
+        self.doc_type.currentTextChanged.connect(self._on_doc_type_changed)
+        self.doc_number = QLineEdit()
+        gen_btn = QPushButton("生成新编号")
+        gen_btn.clicked.connect(self._generate_number)
+        type_row.addWidget(QLabel("单据类型："))
+        type_row.addWidget(self.doc_type)
+        type_row.addWidget(QLabel("单据编号："))
+        type_row.addWidget(self.doc_number)
+        type_row.addWidget(gen_btn)
+        form.addRow(type_row)
 
         self.date_edit = QDateEdit(QDate.currentDate())
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("yyyy-MM-dd")
-        form.addRow("日期：", self.date_edit)
+        form.addRow("单据日期：", self.date_edit)
 
-        terms_row = QHBoxLayout()
-        self.pol = QLineEdit(storage.load_company().get("default_pol", ""))
-        self.pod = QLineEdit()
-        self.incoterm = QComboBox()
-        self.incoterm.addItems(INCOTERMS)
-        self.incoterm.setCurrentText(storage.load_company().get("default_incoterm", "FOB"))
+        self.customer_combo = QComboBox()
+        self.customer_combo.currentIndexChanged.connect(self._on_customer_changed)
+        form.addRow("收件方 (Buyer/Seller)：", self.customer_combo)
+
+        po_row = QHBoxLayout()
+        self.destination = QLineEdit()
+        po_row.addWidget(QLabel("Destination：")); po_row.addWidget(self.destination)
+        form.addRow(po_row)
+
+        validity_row = QHBoxLayout()
+        self.validity_start = QDateEdit(QDate.currentDate())
+        self.validity_start.setCalendarPopup(True)
+        self.validity_start.setDisplayFormat("yyyy-MM-dd")
+        self.validity_end = QDateEdit(QDate.currentDate().addDays(30))
+        self.validity_end.setCalendarPopup(True)
+        self.validity_end.setDisplayFormat("yyyy-MM-dd")
         self.currency = QComboBox()
         self.currency.addItems(CURRENCIES)
         self.currency.currentTextChanged.connect(self._recalculate)
-        terms_row.addWidget(QLabel("POL：")); terms_row.addWidget(self.pol)
-        terms_row.addWidget(QLabel("POD：")); terms_row.addWidget(self.pod)
-        terms_row.addWidget(QLabel("Incoterm：")); terms_row.addWidget(self.incoterm)
-        terms_row.addWidget(QLabel("币种：")); terms_row.addWidget(self.currency)
-        form.addRow("运输条款：", terms_row)
+        validity_row.addWidget(QLabel("Validity Start：")); validity_row.addWidget(self.validity_start)
+        validity_row.addWidget(QLabel("Validity End：")); validity_row.addWidget(self.validity_end)
+        validity_row.addWidget(QLabel("币种：")); validity_row.addWidget(self.currency)
+        form.addRow(validity_row)
 
-        self.payment_terms = QLineEdit("30% T/T in advance, 70% T/T before shipment")
-        form.addRow("付款方式：", self.payment_terms)
-        self.validity = QLineEdit("30 days")
-        form.addRow("报价有效期：", self.validity)
+        # ---- 四类模板预设选择 ----
+        template_row = QHBoxLayout()
+        self.own_combo = QComboBox()
+        self.delivery_combo = QComboBox()
+        self.conditions_combo = QComboBox()
+        self.banking_combo = QComboBox()
+        template_row.addWidget(QLabel("Own：")); template_row.addWidget(self.own_combo)
+        template_row.addWidget(QLabel("Delivery：")); template_row.addWidget(self.delivery_combo)
+        template_row.addWidget(QLabel("Conditions：")); template_row.addWidget(self.conditions_combo)
+        template_row.addWidget(QLabel("Banking：")); template_row.addWidget(self.banking_combo)
+        form.addRow("适用模板：", template_row)
+        manage_hint = QLabel("模板预设可在「模板管理」页签中新增/编辑")
+        manage_hint.setStyleSheet("color: #888; font-size: 11px;")
+        form.addRow("", manage_hint)
+
         self.remark = QLineEdit()
         form.addRow("备注：", self.remark)
 
@@ -154,15 +181,15 @@ class DocumentTab(QWidget):
         btn_row = QHBoxLayout()
         add_btn = QPushButton("添加产品")
         add_btn.clicked.connect(self._add_line)
-        ai_btn = QPushButton("AI 导入产品明细（PO/PDF/图片/Excel）")
+        ai_btn = QPushButton("AI 导入产品明细（PO/PDF/图片/Excel/Word）")
         ai_btn.clicked.connect(self._ai_import_lines)
         btn_row.addWidget(add_btn)
         btn_row.addWidget(ai_btn)
         btn_row.addStretch()
         lines_layout.addLayout(btn_row)
 
-        self.table = QTableWidget(0, len(LINE_COLUMNS))
-        self.table.setHorizontalHeaderLabels(LINE_COLUMNS)
+        self.table = QTableWidget(0, len(FINANCIAL_LINE_COLUMNS))
+        self.table.setHorizontalHeaderLabels(FINANCIAL_LINE_COLUMNS)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         lines_layout.addWidget(self.table)
         layout.addWidget(lines_box)
@@ -184,8 +211,8 @@ class DocumentTab(QWidget):
         new_btn.clicked.connect(self._new_document)
         save_btn = QPushButton("保存到历史")
         save_btn.clicked.connect(self._save_document)
-        export_btn = QPushButton("导出 PI / CI / PL PDF")
-        export_btn.clicked.connect(self._export_pdfs)
+        export_btn = QPushButton("导出 PDF")
+        export_btn.clicked.connect(self._export_pdf)
         action_row.addWidget(new_btn)
         action_row.addWidget(save_btn)
         action_row.addWidget(export_btn)
@@ -197,23 +224,50 @@ class DocumentTab(QWidget):
         self.customers = storage.load_customers()
         self.customer_combo.blockSignals(True)
         self.customer_combo.clear()
-        self.customer_combo.addItem("-- 请选择客户 --", None)
+        self.customer_combo.addItem("-- 请选择收件方 --", None)
         for c in self.customers:
             label = c.get("name_cn") or c.get("name_en") or "未命名客户"
             self.customer_combo.addItem(label, c)
         self.customer_combo.blockSignals(False)
+
+    def _refresh_template_combos(self):
+        templates = storage.load_templates()
+        for category, combo in (
+            ("own", self.own_combo), ("delivery", self.delivery_combo),
+            ("conditions", self.conditions_combo), ("banking", self.banking_combo),
+        ):
+            current_id = combo.currentData().get("id") if combo.currentData() else None
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("-- 无 --", None)
+            restore_idx = 0
+            for i, t in enumerate(templates.get(category, []), start=1):
+                combo.addItem(t.get("name") or "(未命名预设)", t)
+                if current_id and t.get("id") == current_id:
+                    restore_idx = i
+            combo.setCurrentIndex(restore_idx)
+            combo.blockSignals(False)
 
     def _on_customer_changed(self):
         customer = self.customer_combo.currentData()
         if customer:
             self.document["customer_id"] = customer.get("customer_id", "")
             self.document["customer_snapshot"] = customer
-            self.pod.setText(customer.get("pod", ""))
+            dest = ", ".join(filter(None, [customer.get("city", ""), customer.get("country_region", "")]))
+            self.destination.setText(dest)
 
-    def _generate_numbers(self):
-        self.pi_number.setText(storage.generate_doc_number("PI"))
-        self.ci_number.setText(storage.generate_doc_number("CI"))
-        self.pl_number.setText(storage.generate_doc_number("PL"))
+    def _on_doc_type_changed(self):
+        self._rebuild_table(calc.compute_totals(self.document["lines"])["lines"])
+
+    def _generate_number(self):
+        self.doc_number.setText(storage.generate_invoice_number())
+
+    def _set_default_dates(self):
+        start, end = storage.compute_validity_dates(30)
+        y, m, d = map(int, start.split("-"))
+        self.validity_start.setDate(QDate(y, m, d))
+        y, m, d = map(int, end.split("-"))
+        self.validity_end.setDate(QDate(y, m, d))
 
     # ---------------- lines management ----------------
     def _add_line(self):
@@ -248,12 +302,14 @@ class DocumentTab(QWidget):
         for row in confirmed:
             row["quantity"] = _safe_float(row.get("quantity"))
             row["unit_price"] = _safe_float(row.get("unit_price"))
+            row.setdefault("coo", "")
+            row.setdefault("remark", "")
             self.document["lines"].append(row)
         self._recalculate()
         QMessageBox.information(
             self, "提示",
-            f"已导入 {len(confirmed)} 条产品明细，重量/尺寸信息未包含在采购订单中，"
-            "如需精确计算净重/毛重/体积，请在物料库中维护对应产品后手动补充。",
+            f"已导入 {len(confirmed)} 条产品明细，重量/COO 等信息未包含在采购订单中，"
+            "如需精确计算，请在物料库中维护对应产品或在明细表中手动补充。",
         )
 
     def _remove_line(self, index: int):
@@ -261,14 +317,21 @@ class DocumentTab(QWidget):
             del self.document["lines"][index]
             self._recalculate()
 
+    def _is_financial(self) -> bool:
+        return self.doc_type.currentText() != "PL"
+
     def _on_qty_or_price_changed(self):
+        financial = self._is_financial()
+        qty_col = 2
+        price_col = 4 if financial else None
         for row in range(self.table.rowCount()):
-            qty_spin = self.table.cellWidget(row, 3)
-            price_spin = self.table.cellWidget(row, 4)
-            if qty_spin is None or price_spin is None:
-                continue
-            self.document["lines"][row]["quantity"] = qty_spin.value()
-            self.document["lines"][row]["unit_price"] = price_spin.value()
+            qty_spin = self.table.cellWidget(row, qty_col)
+            if qty_spin is not None:
+                self.document["lines"][row]["quantity"] = qty_spin.value()
+            if price_col is not None:
+                price_spin = self.table.cellWidget(row, price_col)
+                if price_spin is not None:
+                    self.document["lines"][row]["unit_price"] = price_spin.value()
         self._recalculate(rebuild_table=False)
 
     def _recalculate(self, rebuild_table: bool = True):
@@ -282,64 +345,90 @@ class DocumentTab(QWidget):
 
         summary = (
             f"总数量：{totals['total_quantity']}    "
-            f"总金额：{currency} {totals['total_amount']:,.2f}    "
             f"总净重：{totals['total_net_weight']} kg    "
-            f"总毛重：{totals['total_gross_weight']} kg    "
-            f"总体积：{totals['total_cbm']} CBM"
         )
+        if self._is_financial():
+            summary += f"总金额：{currency} {totals['total_amount']:,.2f}    "
         self.totals_label.setText(summary)
-        self.words_label.setText(calc.amount_in_words(totals["total_amount"], currency))
+        if self._is_financial():
+            self.words_label.setText(calc.amount_in_words(totals["total_amount"], currency))
+        else:
+            self.words_label.setText("")
 
     def _rebuild_table(self, computed_lines: list):
+        financial = self._is_financial()
+        columns = FINANCIAL_LINE_COLUMNS if financial else PL_LINE_COLUMNS
+        self.table.setColumnCount(len(columns))
+        self.table.setHorizontalHeaderLabels(columns)
         self.table.setRowCount(len(computed_lines))
+
         for row, line in enumerate(computed_lines):
-            self.table.setItem(row, 0, QTableWidgetItem(line.get("model_no", "")))
-            self.table.setItem(row, 1, QTableWidgetItem(line.get("name_cn", "")))
-            self.table.setItem(row, 2, QTableWidgetItem(line.get("name_en", "")))
+            col = 0
+            self.table.setItem(row, col, QTableWidgetItem(str(row + 1))); col += 1
+
+            desc = line.get("name_en", "")
+            if line.get("name_cn"):
+                desc += f"\n{line.get('name_cn')}"
+            desc_item = QTableWidgetItem(desc)
+            self.table.setItem(row, col, desc_item); col += 1
 
             qty_spin = QDoubleSpinBox()
             qty_spin.setMaximum(1_000_000)
             qty_spin.setDecimals(2)
             qty_spin.setValue(line.get("quantity", 0.0))
             qty_spin.valueChanged.connect(self._on_qty_or_price_changed)
-            self.table.setCellWidget(row, 3, qty_spin)
+            self.table.setCellWidget(row, col, qty_spin); col += 1
 
-            price_spin = QDoubleSpinBox()
-            price_spin.setMaximum(10_000_000)
-            price_spin.setDecimals(2)
-            price_spin.setValue(line.get("unit_price", 0.0))
-            price_spin.valueChanged.connect(self._on_qty_or_price_changed)
-            self.table.setCellWidget(row, 4, price_spin)
+            self.table.setItem(row, col, QTableWidgetItem(line.get("unit", ""))); col += 1
 
-            self.table.setItem(row, 5, QTableWidgetItem(f"{line['subtotal']:.2f}"))
-            self.table.setItem(row, 6, QTableWidgetItem(f"{line['total_net_weight']:.2f}"))
-            self.table.setItem(row, 7, QTableWidgetItem(f"{line['total_gross_weight']:.2f}"))
-            self.table.setItem(row, 8, QTableWidgetItem(f"{line['total_cbm']:.3f}"))
+            if financial:
+                price_spin = QDoubleSpinBox()
+                price_spin.setMaximum(10_000_000)
+                price_spin.setDecimals(2)
+                price_spin.setValue(line.get("unit_price", 0.0))
+                price_spin.valueChanged.connect(self._on_qty_or_price_changed)
+                self.table.setCellWidget(row, col, price_spin); col += 1
+
+                self.table.setItem(row, col, QTableWidgetItem(f"{line['subtotal']:.2f}")); col += 1
+
+            self.table.setItem(row, col, QTableWidgetItem(line.get("coo", ""))); col += 1
+            self.table.setItem(row, col, QTableWidgetItem(f"{line.get('net_weight', 0):.2f}")); col += 1
+            self.table.setItem(row, col, QTableWidgetItem(f"{line['total_net_weight']:.2f}")); col += 1
+            self.table.setItem(row, col, QTableWidgetItem(line.get("hs_code", ""))); col += 1
+            self.table.setItem(row, col, QTableWidgetItem(line.get("remark", ""))); col += 1
 
             del_btn = QPushButton("删除")
             del_btn.clicked.connect(lambda _, r=row: self._remove_line(r))
-            self.table.setCellWidget(row, 9, del_btn)
+            self.table.setCellWidget(row, col, del_btn)
 
     def _update_computed_cells(self, computed_lines: list):
+        financial = self._is_financial()
         for row, line in enumerate(computed_lines):
-            self.table.setItem(row, 5, QTableWidgetItem(f"{line['subtotal']:.2f}"))
-            self.table.setItem(row, 6, QTableWidgetItem(f"{line['total_net_weight']:.2f}"))
-            self.table.setItem(row, 7, QTableWidgetItem(f"{line['total_gross_weight']:.2f}"))
-            self.table.setItem(row, 8, QTableWidgetItem(f"{line['total_cbm']:.3f}"))
+            nw_col = 7 if financial else 5
+            tnw_col = nw_col + 1
+            self.table.setItem(row, nw_col, QTableWidgetItem(f"{line.get('net_weight', 0):.2f}"))
+            self.table.setItem(row, tnw_col, QTableWidgetItem(f"{line['total_net_weight']:.2f}"))
+            if financial:
+                self.table.setItem(row, 5, QTableWidgetItem(f"{line['subtotal']:.2f}"))
 
     # ---------------- persistence ----------------
+    def _selected_template_snapshot(self, combo: QComboBox) -> dict:
+        template = combo.currentData()
+        return dict(template.get("fields", {})) if template else {}
+
     def _collect_document(self) -> dict:
         self.document.update({
-            "pi_number": self.pi_number.text().strip(),
-            "ci_number": self.ci_number.text().strip(),
-            "pl_number": self.pl_number.text().strip(),
+            "doc_type": self.doc_type.currentText(),
+            "doc_number": self.doc_number.text().strip(),
             "date": self.date_edit.date().toString("yyyy-MM-dd"),
             "currency": self.currency.currentText(),
-            "incoterm": self.incoterm.currentText(),
-            "pol": self.pol.text().strip(),
-            "pod": self.pod.text().strip(),
-            "payment_terms": self.payment_terms.text().strip(),
-            "validity": self.validity.text().strip(),
+            "destination": self.destination.text().strip(),
+            "own_snapshot": self._selected_template_snapshot(self.own_combo),
+            "delivery_snapshot": self._selected_template_snapshot(self.delivery_combo),
+            "conditions_snapshot": self._selected_template_snapshot(self.conditions_combo),
+            "banking_snapshot": self._selected_template_snapshot(self.banking_combo),
+            "validity_start": self.validity_start.date().toString("yyyy-MM-dd"),
+            "validity_end": self.validity_end.date().toString("yyyy-MM-dd"),
             "remark": self.remark.text().strip(),
         })
         return self.document
@@ -349,15 +438,16 @@ class DocumentTab(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         self.document = make_document()
-        self.pi_number.clear(); self.ci_number.clear(); self.pl_number.clear()
-        self.pod.clear(); self.remark.clear()
+        self._generate_number()
+        self._set_default_dates()
+        self.destination.clear(); self.remark.clear()
         self.customer_combo.setCurrentIndex(0)
         self._recalculate()
 
     def _save_document(self):
         doc = self._collect_document()
         if not doc.get("customer_id"):
-            QMessageBox.warning(self, "提示", "请先选择客户")
+            QMessageBox.warning(self, "提示", "请先选择收件方")
             return
         if not doc.get("lines"):
             QMessageBox.warning(self, "提示", "请至少添加一条产品明细")
@@ -371,33 +461,27 @@ class DocumentTab(QWidget):
         storage.save_documents(documents)
         QMessageBox.information(self, "提示", "单据已保存到历史记录")
 
-    def _export_pdfs(self):
+    def _export_pdf(self):
         doc = self._collect_document()
         if not doc.get("customer_id"):
-            QMessageBox.warning(self, "提示", "请先选择客户")
+            QMessageBox.warning(self, "提示", "请先选择收件方")
             return
         if not doc.get("lines"):
             QMessageBox.warning(self, "提示", "请至少添加一条产品明细")
             return
-        if not (doc.get("pi_number") and doc.get("ci_number") and doc.get("pl_number")):
-            self._generate_numbers()
+        if not doc.get("doc_number"):
+            self._generate_number()
             doc = self._collect_document()
 
         company = storage.load_company()
         export_dir = get_exports_dir()
         try:
-            pi_path = pdf_export.export_pi(doc, os.path.join(export_dir, f"{doc['pi_number']}.pdf"), company)
-            ci_path = pdf_export.export_ci(doc, os.path.join(export_dir, f"{doc['ci_number']}.pdf"), company)
-            pl_path = pdf_export.export_pl(doc, os.path.join(export_dir, f"{doc['pl_number']}.pdf"), company)
+            path = pdf_export.export_document(doc, os.path.join(export_dir, f"{doc['doc_number']}.pdf"), company)
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"PDF 生成过程中发生错误：{e}")
             return
 
-        QMessageBox.information(
-            self, "导出成功",
-            f"三份单据已导出至：\n{export_dir}\n\n{os.path.basename(pi_path)}\n"
-            f"{os.path.basename(ci_path)}\n{os.path.basename(pl_path)}",
-        )
+        QMessageBox.information(self, "导出成功", f"单据已导出至：\n{path}")
 
     def get_current_document(self) -> dict:
         """供导出模块调用，获取当前联动计算后的完整单据数据"""
@@ -407,20 +491,16 @@ class DocumentTab(QWidget):
         """从历史记录中加载一份单据到编辑界面（供"一键复制新建"使用）"""
         self.document = doc
         self._refresh_customer_combo()
+        self._refresh_template_combos()
+        self.doc_type.setCurrentText(doc.get("doc_type", "PI"))
         idx = next(
             (i for i in range(self.customer_combo.count())
              if self.customer_combo.itemData(i) and self.customer_combo.itemData(i).get("customer_id") == doc.get("customer_id")),
             0,
         )
         self.customer_combo.setCurrentIndex(idx)
-        self.pi_number.setText(doc.get("pi_number", ""))
-        self.ci_number.setText(doc.get("ci_number", ""))
-        self.pl_number.setText(doc.get("pl_number", ""))
-        self.pol.setText(doc.get("pol", ""))
-        self.pod.setText(doc.get("pod", ""))
-        self.incoterm.setCurrentText(doc.get("incoterm", "FOB"))
+        self.doc_number.setText(doc.get("doc_number", ""))
+        self.destination.setText(doc.get("destination", ""))
         self.currency.setCurrentText(doc.get("currency", "USD"))
-        self.payment_terms.setText(doc.get("payment_terms", ""))
-        self.validity.setText(doc.get("validity", ""))
         self.remark.setText(doc.get("remark", ""))
         self._recalculate()

@@ -5,8 +5,10 @@
 """
 import json
 import os
+import random
 import shutil
-from datetime import datetime
+import string
+from datetime import datetime, timedelta
 from typing import Any
 
 from core.paths import get_data_path, get_backups_dir, get_data_dir
@@ -154,6 +156,63 @@ def generate_doc_number(prefix: str) -> str:
     counters[key] = seq
     save_counters(counters)
     return f"{key}{seq:03d}"
+
+
+# ---------- 模板（Own/收货地址/条款/银行信息，均支持多套命名预设） ----------
+TEMPLATES_FILE = "templates.json"
+
+DEFAULT_TEMPLATES = {"own": [], "delivery": [], "conditions": [], "banking": []}
+
+
+def load_templates() -> dict:
+    data = _read_json(TEMPLATES_FILE, None)
+    if data is None:
+        data = {k: list(v) for k, v in DEFAULT_TEMPLATES.items()}
+        _write_json(TEMPLATES_FILE, data)
+        return data
+    updated = False
+    for key in DEFAULT_TEMPLATES:
+        if key not in data:
+            data[key] = []
+            updated = True
+    if updated:
+        _write_json(TEMPLATES_FILE, data)
+    return data
+
+
+def save_templates(data: dict) -> None:
+    _write_json(TEMPLATES_FILE, data)
+
+
+# ---------- 单据编号（BAAS + YYMMDD + 随机字母 A-H） ----------
+def generate_invoice_number() -> str:
+    """
+    生成单据编号：BAAS + 当天日期(YYMMDD) + 随机字母（A-H）。
+    若当天该字母已被占用（极小概率冲突），自动尝试下一个字母，
+    A-H 用尽后退回使用完整时间戳后缀，确保编号始终唯一。
+    """
+    date_part = datetime.now().strftime("%y%m%d")
+    base = f"BAAS{date_part}"
+    counters = load_counters()
+    used_key = f"INVOICE_USED_{base}"
+    used_letters = set(counters.get(used_key, []))
+
+    for letter in string.ascii_uppercase[:8]:  # A-H
+        if letter not in used_letters:
+            used_letters.add(letter)
+            counters[used_key] = sorted(used_letters)
+            save_counters(counters)
+            return f"{base}{letter}"
+
+    # A-H 均已用尽（同一天生成了 8 份以上单据），退回加毫秒时间戳保证唯一
+    return f"{base}{datetime.now().strftime('%H%M%S%f')}"
+
+
+def compute_validity_dates(days: int = 30) -> tuple:
+    """返回 (今天日期字符串, N天后日期字符串)，格式 YYYY-MM-DD"""
+    today = datetime.now()
+    end = today + timedelta(days=days)
+    return today.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
 
 def generate_customer_id() -> str:

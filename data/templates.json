@@ -1,0 +1,61 @@
+{
+  "own": [
+    {
+      "id": "3f0bd21b0891",
+      "category": "own",
+      "name": "默认信头",
+      "fields": {
+        "company_name_en": "SAMPLE TRADING CO., LTD.",
+        "company_name_cn": "示例贸易有限公司",
+        "address": "No.1 Sample Road, Nanshan District, Shenzhen, Guangdong, China",
+        "phone": "+86 755 12345678",
+        "company_reg_no": "REG-EXAMPLE-0001",
+        "gst_no": "",
+        "contact_person": "Sales Team",
+        "telephone": "+86 755 12345678",
+        "email": "sales@sampletrading.com"
+      }
+    }
+  ],
+  "delivery": [
+    {
+      "id": "a00403b063ea",
+      "category": "delivery",
+      "name": "默认收货地址",
+      "fields": {
+        "company_name": "GLOBAL IMPORT TRADING CO., LTD.",
+        "address": "123 Harbor Street, Los Angeles, CA 90001, USA"
+      }
+    }
+  ],
+  "conditions": [
+    {
+      "id": "383551836bf6",
+      "category": "conditions",
+      "name": "默认条款",
+      "fields": {
+        "terms_of_payment": "30% deposit, 70% before shipment",
+        "incoterm": "FOB",
+        "shipment_by": "Sea Freight"
+      }
+    }
+  ],
+  "banking": [
+    {
+      "id": "1638e31b2fe9",
+      "category": "banking",
+      "name": "默认银行信息",
+      "fields": {
+        "bank_name": "BANK OF CHINA, SHENZHEN BRANCH",
+        "account_no": "1234 5678 9012 3456",
+        "swift_code": "BKCHCNBJ400",
+        "beneficiary_name": "SAMPLE TRADING CO., LTD.",
+        "beneficiary_bank_name": "BANK OF CHINA, SHENZHEN BRANCH",
+        "beneficiary_swift_code": "BKCHCNBJ400",
+        "correspondent_bank": "",
+        "beneficiary_bank_address": "No.88 Sample Ave, Shenzhen, China",
+        "beneficiary_account_no": "1234 5678 9012 3456"
+      }
+    }
+  ]
+}

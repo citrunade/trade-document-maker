@@ -46,6 +46,8 @@ class CustomerEditDialog(QDialog):
         self.contact_person = QLineEdit(self.customer.get("contact_person", ""))
         self.email = QLineEdit(self.customer.get("email", ""))
         self.tel_phone = QLineEdit(self.customer.get("tel_phone", ""))
+        self.company_reg_no = QLineEdit(self.customer.get("company_reg_no", ""))
+        self.gst_no = QLineEdit(self.customer.get("gst_no", ""))
 
         form.addRow("中文名称：", self.name_cn)
         form.addRow("英文名称：", self.name_en)
@@ -56,6 +58,8 @@ class CustomerEditDialog(QDialog):
         form.addRow("联系人：", self.contact_person)
         form.addRow("邮箱：", self.email)
         form.addRow("联系电话：", self.tel_phone)
+        form.addRow("Company Reg. No.：", self.company_reg_no)
+        form.addRow("GST No.：", self.gst_no)
         layout.addLayout(form)
 
         shipping_label = QLabel("以下为制单专用字段（生成 PI/CI/PL 时使用，可与上方地址不同）")
@@ -91,6 +95,8 @@ class CustomerEditDialog(QDialog):
             "contact_person": self.contact_person.text().strip(),
             "email": self.email.text().strip(),
             "tel_phone": self.tel_phone.text().strip(),
+            "company_reg_no": self.company_reg_no.text().strip(),
+            "gst_no": self.gst_no.text().strip(),
             "consignee": self.consignee.text().strip(),
             "notify_party": self.notify_party.text().strip(),
             "pod": self.pod.text().strip(),

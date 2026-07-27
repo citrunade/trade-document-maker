@@ -5,7 +5,7 @@
 即可体验完整的制单流程。
 """
 from core import storage
-from core.models import make_customer, make_product
+from core.models import make_customer, make_product, make_template
 
 
 def seed_customers_if_empty() -> None:
@@ -64,6 +64,45 @@ def seed_products_if_empty() -> None:
     storage.save_products(products)
 
 
+def seed_templates_if_empty() -> None:
+    templates = storage.load_templates()
+    if any(templates.values()):
+        return
+    templates["own"].append(make_template("own", "默认信头", {
+        "company_name_en": "SAMPLE TRADING CO., LTD.",
+        "company_name_cn": "示例贸易有限公司",
+        "address": "No.1 Sample Road, Nanshan District, Shenzhen, Guangdong, China",
+        "phone": "+86 755 12345678",
+        "company_reg_no": "REG-EXAMPLE-0001",
+        "gst_no": "",
+        "contact_person": "Sales Team",
+        "telephone": "+86 755 12345678",
+        "email": "sales@sampletrading.com",
+    }))
+    templates["delivery"].append(make_template("delivery", "默认收货地址", {
+        "company_name": "GLOBAL IMPORT TRADING CO., LTD.",
+        "address": "123 Harbor Street, Los Angeles, CA 90001, USA",
+    }))
+    templates["conditions"].append(make_template("conditions", "默认条款", {
+        "terms_of_payment": "30% deposit, 70% before shipment",
+        "incoterm": "FOB",
+        "shipment_by": "Sea Freight",
+    }))
+    templates["banking"].append(make_template("banking", "默认银行信息", {
+        "bank_name": "BANK OF CHINA, SHENZHEN BRANCH",
+        "account_no": "1234 5678 9012 3456",
+        "swift_code": "BKCHCNBJ400",
+        "beneficiary_name": "SAMPLE TRADING CO., LTD.",
+        "beneficiary_bank_name": "BANK OF CHINA, SHENZHEN BRANCH",
+        "beneficiary_swift_code": "BKCHCNBJ400",
+        "correspondent_bank": "",
+        "beneficiary_bank_address": "No.88 Sample Ave, Shenzhen, China",
+        "beneficiary_account_no": "1234 5678 9012 3456",
+    }))
+    storage.save_templates(templates)
+
+
 def seed_all() -> None:
     seed_customers_if_empty()
     seed_products_if_empty()
+    seed_templates_if_empty()

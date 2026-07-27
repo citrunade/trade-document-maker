@@ -169,6 +169,8 @@ CUSTOMER_PROMPT = """你是外贸单据信息提取助手。用户会提供一�
   "contact_person": "联系人",
   "email": "电子邮箱",
   "tel_phone": "联系电话",
+  "company_reg_no": "公司注册号",
+  "gst_no": "GST/增值税登记号",
   "consignee": "收货人信息（如与地址不同，可多行，用\\n分隔）",
   "notify_party": "通知人信息",
   "pod": "目的港（若单据中出现具体港口名）",
@@ -193,6 +195,7 @@ PRODUCT_PROMPT = """你是外贸单据信息提取助手。用户会提供一份
     "height_mm": 0.0,
     "unit_price": 0.0,
     "currency": "USD",
+    "coo": "原产国/地区代码（如 DE/CN，找不到留空）",
     "remark": ""
     }
   ]
@@ -210,7 +213,9 @@ DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提�
     "hs_code": "HS编码",
     "unit": "单位",
     "quantity": 0.0,
-    "unit_price": 0.0
+    "unit_price": 0.0,
+    "coo": "原产国/地区代码（如 DE/CN，找不到留空）",
+    "remark": "备注（找到才填写）"
     }
   ]
 }
@@ -287,7 +292,8 @@ def import_customer(path: str, config: dict) -> dict:
     customer = make_customer()
     for key in (
         "name_cn", "name_en", "country_region", "city", "address_en", "tax_no",
-        "contact_person", "email", "tel_phone", "consignee", "notify_party", "pod", "remark",
+        "contact_person", "email", "tel_phone", "company_reg_no", "gst_no",
+        "consignee", "notify_party", "pod", "remark",
     ):
         if key in data and data[key] is not None:
             customer[key] = str(data[key])
@@ -320,6 +326,7 @@ def import_products(path: str, config: dict) -> list:
             height_mm=_to_float(item.get("height_mm", 0)),
             unit_price=_to_float(item.get("unit_price", 0)),
             currency=str(item.get("currency", "USD")) or "USD",
+            coo=str(item.get("coo", "")),
             remark=str(item.get("remark", "")),
         )
         products.append(product)
@@ -351,6 +358,8 @@ def import_document_lines(path: str, config: dict) -> list:
             "length_mm": 0.0,
             "width_mm": 0.0,
             "height_mm": 0.0,
+            "coo": str(item.get("coo", "")),
+            "remark": str(item.get("remark", "")),
         }
         line = make_doc_line(pseudo_product, quantity=_to_float(item.get("quantity", 0)))
         lines.append(line)

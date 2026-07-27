@@ -1,7 +1,12 @@
 """
-PDF 单据导出模块（PI / CI / PL）
-使用 ReportLab 生成 A4 尺寸、中英双语、ICC 通用外贸标准格式单据。
-三种单据共用同一份联动数据（core.calc 计算结果），确保数据一致。
+PDF 单据导出模块（统一格式，PI / CI / PL 仅标题与是否显示价格不同）
+使用 ReportLab 生成 A4 尺寸、中英双语单据。
+
+版式：
+- 每页页眉重复显示：左侧 Own（本公司）信头，右侧收件方信息 + 单据标题/页码。
+- 每页页脚重复显示：银行基本信息（户名/账号/Swift Code）。
+- 页面主体：Delivery Address + Conditions（左列）与 Information（右列）两组信息框，
+  随后是产品明细表；最后一页额外附加收款银行详情（作为普通流式内容，自然落在末页）。
 """
 import os
 
@@ -13,355 +18,414 @@ from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, HRFlowable,
 )
 from reportlab.lib.styles import ParagraphStyle
+from reportlab.pdfgen import canvas as canvas_module
 
 from core import calc
 from core.fonts import ensure_fonts_registered
 from core.paths import get_data_path
 
 PAGE_MARGIN = 15 * mm
+HEADER_HEIGHT = 68 * mm
+FOOTER_HEIGHT = 16 * mm
+
+# 表头/信息框标题栏背景色：由深藏青改为更浅的蓝色
+HEADER_BG = colors.HexColor("#5B9BD5")
+BOX_TITLE_BG = colors.HexColor("#DCE9F7")
+
+DOC_TITLES = {
+    "PI": ("PROFORMA INVOICE", "形式发票"),
+    "CI": ("COMMERCIAL INVOICE", "商业发票"),
+    "PL": ("PACKING LIST", "装箱单"),
+}
 
 
 def _styles():
     regular, bold = ensure_fonts_registered()
     return {
-        "title": ParagraphStyle(
-            "title", fontName=bold, fontSize=16, alignment=TA_CENTER, spaceAfter=4,
-        ),
-        "subtitle": ParagraphStyle(
-            "subtitle", fontName=regular, fontSize=9, alignment=TA_CENTER, textColor=colors.grey,
-        ),
-        "company_name": ParagraphStyle(
-            "company_name", fontName=bold, fontSize=12, alignment=TA_LEFT, leading=15,
-        ),
-        "normal": ParagraphStyle(
-            "normal", fontName=regular, fontSize=8.5, alignment=TA_LEFT, leading=12,
-        ),
-        "normal_right": ParagraphStyle(
-            "normal_right", fontName=regular, fontSize=8.5, alignment=TA_RIGHT, leading=12,
-        ),
-        "section_head": ParagraphStyle(
-            "section_head", fontName=bold, fontSize=9.5, alignment=TA_LEFT,
-            spaceBefore=6, spaceAfter=3,
-        ),
-        "cell": ParagraphStyle(
-            "cell", fontName=regular, fontSize=8, alignment=TA_LEFT, leading=10,
-        ),
-        "cell_center": ParagraphStyle(
-            "cell_center", fontName=regular, fontSize=8, alignment=TA_CENTER, leading=10,
-        ),
-        "cell_right": ParagraphStyle(
-            "cell_right", fontName=regular, fontSize=8, alignment=TA_RIGHT, leading=10,
-        ),
-        "footer": ParagraphStyle(
-            "footer", fontName=regular, fontSize=7.5, alignment=TA_LEFT,
-            leading=10, textColor=colors.grey,
-        ),
-        "bold_small": ParagraphStyle(
-            "bold_small", fontName=bold, fontSize=8.5, alignment=TA_LEFT, leading=11,
-        ),
+        "regular_name": regular,
+        "bold_name": bold,
+        "title": ParagraphStyle("title", fontName=bold, fontSize=14, alignment=TA_RIGHT, leading=17),
+        "normal": ParagraphStyle("normal", fontName=regular, fontSize=8.5, alignment=TA_LEFT, leading=11.5),
+        "normal_right": ParagraphStyle("normal_right", fontName=regular, fontSize=8.5, alignment=TA_RIGHT, leading=11.5),
+        "box_title": ParagraphStyle("box_title", fontName=bold, fontSize=9, alignment=TA_LEFT, leading=12),
+        "cell": ParagraphStyle("cell", fontName=regular, fontSize=8, alignment=TA_LEFT, leading=10),
+        "cell_center": ParagraphStyle("cell_center", fontName=regular, fontSize=8, alignment=TA_CENTER, leading=10),
+        "cell_right": ParagraphStyle("cell_right", fontName=regular, fontSize=8, alignment=TA_RIGHT, leading=10),
+        "footer": ParagraphStyle("footer", fontName=regular, fontSize=7.5, alignment=TA_CENTER, leading=10, textColor=colors.grey),
+        "bold_small": ParagraphStyle("bold_small", fontName=bold, fontSize=8.5, alignment=TA_LEFT, leading=11),
+        "note": ParagraphStyle("note", fontName=regular, fontSize=7.5, alignment=TA_LEFT, leading=10),
     }
-
-
-def _build_header(company: dict, doc_title_en: str, doc_title_cn: str, styles):
-    """
-    构建 PDF 页眉：左侧 Logo + 公司信息，右侧单据标题。
-    容错：若 data/logo.png 不存在，自动跳过图片，仅显示公司名称文本，不报错。
-    """
-    logo_path = get_data_path("logo.png")
-    logo_cell = ""
-    if os.path.exists(logo_path):
-        try:
-            img = Image(logo_path)
-            # 等比例缩放，高度控制在约 18mm
-            target_h = 18 * mm
-            ratio = img.imageWidth / img.imageHeight if img.imageHeight else 1
-            img.drawHeight = target_h
-            img.drawWidth = target_h * ratio
-            logo_cell = img
-        except Exception:
-            logo_cell = ""
-
-    company_text = (
-        f"<b>{company.get('name_en', '')}</b><br/>{company.get('name_cn', '')}<br/>"
-        f"{company.get('address_en', '')}<br/>{company.get('address_cn', '')}<br/>"
-        f"Tel: {company.get('phone', '')}  Email: {company.get('email', '')}<br/>"
-        f"Tax ID: {company.get('tax_id', '')}"
-    )
-    company_para = Paragraph(company_text, styles["normal"])
-
-    left_content = [logo_cell, company_para] if logo_cell else [company_para]
-    left_table = Table([[c] for c in left_content], colWidths=[95 * mm])
-    left_table.setStyle(TableStyle([
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 1),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-    ]))
-
-    title_para = Paragraph(f"{doc_title_en}<br/><font size=9>{doc_title_cn}</font>", styles["title"])
-
-    header_table = Table([[left_table, title_para]], colWidths=[95 * mm, 85 * mm])
-    header_table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    return header_table
-
-
-def _party_info_table(doc: dict, doc_number: str, styles, include_payment: bool):
-    customer = doc.get("customer_snapshot", {})
-    consignee = customer.get("consignee", "") or customer.get("address_en", "")
-    tax_no = customer.get("tax_no", "")
-    left_text = (
-        f"<b>To / 致：</b><br/>{customer.get('name_en', '')}<br/>{customer.get('name_cn', '')}<br/>"
-        f"<b>Consignee / 收货人：</b><br/>{consignee.replace(chr(10), '<br/>')}<br/>"
-        f"<b>Notify Party / 通知人：</b><br/>{customer.get('notify_party', '').replace(chr(10), '<br/>')}"
-        + (f"<br/><b>Tax No. / VAT：</b>{tax_no}" if tax_no else "")
-    )
-    right_rows = [
-        ("No. / 单号：", doc_number),
-        ("Date / 日期：", doc.get("date", "")),
-        ("POL / 起运港：", doc.get("pol", "")),
-        ("POD / 目的港：", doc.get("pod", "")),
-        ("Incoterm / 贸易术语：", doc.get("incoterm", "")),
-        ("Destination / 目的国：", customer.get("country_region", "")),
-    ]
-    if include_payment:
-        right_rows.append(("Payment / 付款方式：", doc.get("payment_terms", "")))
-        right_rows.append(("Validity / 有效期：", doc.get("validity", "")))
-
-    right_text = "<br/>".join(f"<b>{k}</b>{v}" for k, v in right_rows)
-
-    table = Table(
-        [[Paragraph(left_text, styles["normal"]), Paragraph(right_text, styles["normal"])]],
-        colWidths=[95 * mm, 85 * mm],
-    )
-    table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    return table
 
 
 def _wrap(text, style):
     return Paragraph(str(text) if text is not None else "", style)
 
 
-def _financial_lines_table(computed_lines: list, currency: str, styles):
-    headers = [
-        "No.", "Model / 型号", "Description / 品名", "HS Code",
-        "Qty / 数量", "Unit / 单位", "Unit Price / 单价", "Amount / 金额",
+def _nl2br(text: str) -> str:
+    return (text or "").replace("\r\n", "\n").replace("\n", "<br/>")
+
+
+# ---------------- 每页重复的页眉/页脚（通过自定义 Canvas 绘制） ----------------
+def _draw_repeating_header(c, styles, own: dict, customer: dict, doc_type: str, page_num: int, total_pages):
+    page_w, page_h = A4
+    top_y = page_h - PAGE_MARGIN
+
+    regular = styles["regular_name"]
+    bold = styles["bold_name"]
+
+    # --- 左：收件方（客户）信息 ---
+    recipient_lines = [
+        (bold, 9, customer.get("name_en", "")),
+        (regular, 8, customer.get("name_cn", "")),
+        (regular, 8, customer.get("address_en", "")),
     ]
+    if customer.get("tel_phone"):
+        recipient_lines.append((regular, 8, f"Phone: {customer.get('tel_phone')}"))
+    if customer.get("company_reg_no"):
+        recipient_lines.append((regular, 8, f"Company Reg. No.: {customer.get('company_reg_no')}"))
+    if customer.get("gst_no"):
+        recipient_lines.append((regular, 8, f"GST No.: {customer.get('gst_no')}"))
+
+    y = top_y - 4
+    for font, size, text in recipient_lines:
+        if not text:
+            continue
+        c.setFont(font, size)
+        c.drawString(PAGE_MARGIN, y, text)
+        y -= size + 2.5
+
+    # --- 右：Own 信头（含 Logo，固定不变）+ 单据标题/页码 ---
+    right_x = page_w - PAGE_MARGIN
+    title_en, title_cn = DOC_TITLES.get(doc_type, DOC_TITLES["PI"])
+    c.setFont(bold, 14)
+    c.drawRightString(right_x, top_y - 4, title_en)
+    c.setFont(regular, 9)
+    c.drawRightString(right_x, top_y - 14, title_cn)
+    page_label = f"Page {page_num} of {total_pages}" if total_pages else f"Page {page_num}"
+    c.setFont(regular, 8)
+    c.drawRightString(right_x, top_y - 22, page_label)
+
+    logo_path = get_data_path("logo.png")
+    if os.path.exists(logo_path):
+        try:
+            img = Image(logo_path)
+            target_h = 14 * mm
+            ratio = img.imageWidth / img.imageHeight if img.imageHeight else 1
+            draw_w = target_h * ratio
+            c.drawImage(logo_path, right_x - draw_w, top_y - 28 * mm, width=draw_w, height=target_h,
+                        preserveAspectRatio=True, mask="auto")
+        except Exception:
+            pass
+
+    own_lines = [
+        (bold, 10, own.get("company_name_en", "")),
+        (regular, 8.5, own.get("company_name_cn", "")),
+    ]
+    for line in _nl2br(own.get("address", "")).split("<br/>"):
+        own_lines.append((regular, 8, line))
+    if own.get("phone"):
+        own_lines.append((regular, 8, f"Phone: {own.get('phone')}"))
+    if own.get("company_reg_no"):
+        own_lines.append((regular, 8, f"Company Reg. No.: {own.get('company_reg_no')}"))
+    if own.get("gst_no"):
+        own_lines.append((regular, 8, f"GST No.: {own.get('gst_no')}"))
+
+    y = top_y - 34 * mm
+    for font, size, text in own_lines:
+        if not text:
+            continue
+        c.setFont(font, size)
+        c.drawRightString(right_x, y, text)
+        y -= size + 2.5
+
+    c.setStrokeColor(colors.HexColor("#5B9BD5"))
+    c.setLineWidth(1)
+    c.line(PAGE_MARGIN, page_h - HEADER_HEIGHT + 2 * mm, page_w - PAGE_MARGIN, page_h - HEADER_HEIGHT + 2 * mm)
+
+
+def _draw_repeating_footer(c, styles, own: dict, banking: dict):
+    page_w, _ = A4
+    regular = styles["regular_name"]
+    bold = styles["bold_name"]
+    center_x = page_w / 2
+
+    c.setStrokeColor(colors.lightgrey)
+    c.setLineWidth(0.5)
+    c.line(PAGE_MARGIN, FOOTER_HEIGHT, page_w - PAGE_MARGIN, FOOTER_HEIGHT)
+
+    y = FOOTER_HEIGHT - 5
+    c.setFont(bold, 8)
+    c.drawCentredString(center_x, y, own.get("company_name_en", ""))
+    y -= 9
+    bank_parts = []
+    if banking.get("bank_name"):
+        bank_parts.append(f"Bank: {banking.get('bank_name')}")
+    if banking.get("account_no"):
+        bank_parts.append(f"Account No.: {banking.get('account_no')}")
+    if banking.get("swift_code"):
+        bank_parts.append(f"Swift Code: {banking.get('swift_code')}")
+    c.setFont(regular, 7.5)
+    c.setFillColor(colors.grey)
+    c.drawCentredString(center_x, y, "   ".join(bank_parts))
+    c.setFillColor(colors.black)
+
+
+class _NumberedCanvas(canvas_module.Canvas):
+    """
+    两遍渲染：先缓存每一页，最后在 save() 时才知道总页数，
+    从而能在每页页眉正确显示 "Page X of Y"。
+    """
+    _context = None  # 由 _canvas_factory 注入
+
+    def __init__(self, *args, **kwargs):
+        canvas_module.Canvas.__init__(self, *args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self._draw_furniture(total)
+            canvas_module.Canvas.showPage(self)
+        canvas_module.Canvas.save(self)
+
+    def _draw_furniture(self, total_pages):
+        ctx = self._context
+        self.saveState()
+        _draw_repeating_header(self, ctx["styles"], ctx["own"], ctx["customer"], ctx["doc_type"],
+                                self.getPageNumber(), total_pages)
+        _draw_repeating_footer(self, ctx["styles"], ctx["own"], ctx["banking"])
+        self.restoreState()
+
+
+def _canvas_factory(context: dict):
+    return type("_BoundNumberedCanvas", (_NumberedCanvas,), {"_context": context})
+
+
+# ---------------- 主体信息框（Delivery / Conditions / Information） ----------------
+def _boxed_section(title: str, body_text: str, styles, width: float) -> Table:
+    title_row = [Paragraph(f"<b>{title}</b>", styles["box_title"])]
+    body_row = [Paragraph(body_text, styles["normal"])]
+    table = Table([title_row, body_row], colWidths=[width])
+    table.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#5B9BD5")),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.75, colors.HexColor("#5B9BD5")),
+        ("BACKGROUND", (0, 0), (-1, 0), BOX_TITLE_BG),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return table
+
+
+def _left_column(doc: dict, styles, width: float):
+    delivery = doc.get("delivery_snapshot", {})
+    conditions = doc.get("conditions_snapshot", {})
+
+    delivery_text = f"<b>{delivery.get('company_name', '')}</b><br/>{_nl2br(delivery.get('address', ''))}"
+    delivery_box = _boxed_section("Delivery Address", delivery_text, styles, width)
+
+    incoterm_line = conditions.get("incoterm", "")
+    if doc.get("destination"):
+        incoterm_line = f"{incoterm_line}  {doc.get('destination')}".strip()
+    conditions_text = (
+        f"<b>Terms of Payment</b>&nbsp;&nbsp;{conditions.get('terms_of_payment', '')}<br/><br/>"
+        f"<b>Incoterms</b>&nbsp;&nbsp;{incoterm_line}<br/><br/>"
+        f"<b>Shipment by</b>&nbsp;&nbsp;{conditions.get('shipment_by', '')}"
+    )
+    conditions_box = _boxed_section("Conditions", conditions_text, styles, width)
+
+    stacked = Table([[delivery_box], [Spacer(1, 4)], [conditions_box]], colWidths=[width])
+    stacked.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return stacked
+
+
+def _right_column(doc: dict, styles, width: float):
+    own = doc.get("own_snapshot", {})
+    rows = [
+        ("Doc No", doc.get("doc_number", "")),
+        ("Document Date", doc.get("date", "")),
+        ("Validity Start Date", doc.get("validity_start", "")),
+        ("Validity End Date", doc.get("validity_end", "")),
+        ("", ""),
+        ("Our Contact", own.get("contact_person", "")),
+        ("Telephone", own.get("telephone", "")),
+        ("Email", own.get("email", "")),
+    ]
+    lines = []
+    for label, value in rows:
+        if not label:
+            lines.append("&nbsp;")
+        else:
+            lines.append(f"<b>{label}</b>&nbsp;&nbsp;{value}")
+    info_text = "<br/>".join(lines)
+    return _boxed_section("Information", info_text, styles, width)
+
+
+# ---------------- 产品明细表 ----------------
+FINANCIAL_HEADERS = ["No.", "Description", "Qty", "Unit", "Unit Price", "Total Price",
+                     "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
+PL_HEADERS = ["No.", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
+
+
+def _item_table(computed_lines: list, currency: str, styles, financial: bool, content_width: float):
+    headers = FINANCIAL_HEADERS if financial else PL_HEADERS
     data = [[_wrap(h, styles["cell_center"]) for h in headers]]
+
     for i, line in enumerate(computed_lines, start=1):
-        desc = f"{line.get('name_en', '')}<br/>{line.get('name_cn', '')}"
-        data.append([
+        desc = line.get("name_en", "")
+        if line.get("name_cn"):
+            desc += f"<br/>{line.get('name_cn')}"
+        else:
+            desc += "<br/>&nbsp;"
+
+        row = [
             _wrap(i, styles["cell_center"]),
-            _wrap(line.get("model_no", ""), styles["cell"]),
             Paragraph(desc, styles["cell"]),
-            _wrap(line.get("hs_code", ""), styles["cell_center"]),
             _wrap(f"{line.get('quantity', 0):g}", styles["cell_right"]),
             _wrap(line.get("unit", ""), styles["cell_center"]),
-            _wrap(f"{line.get('unit_price', 0):,.2f}", styles["cell_right"]),
-            _wrap(f"{line.get('subtotal', 0):,.2f}", styles["cell_right"]),
-        ])
-    col_widths = [10*mm, 22*mm, 55*mm, 18*mm, 16*mm, 14*mm, 22*mm, 23*mm]
-    table = Table(data, colWidths=col_widths, repeatRows=1)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f6fa")]),
-    ]))
-    return table
-
-
-def _packing_lines_table(computed_lines: list, styles):
-    headers = [
-        "No.", "Model / 型号", "Description / 品名", "Qty / 数量",
-        "N.W./pc", "G.W./pc", "Total N.W.(kg)", "Total G.W.(kg)",
-        "Ctn Size (mm)", "CBM",
-    ]
-    data = [[_wrap(h, styles["cell_center"]) for h in headers]]
-    for i, line in enumerate(computed_lines, start=1):
-        desc = f"{line.get('name_en', '')}<br/>{line.get('name_cn', '')}"
-        ctn_size = f"{line.get('length_mm', 0):g}x{line.get('width_mm', 0):g}x{line.get('height_mm', 0):g}"
-        data.append([
-            _wrap(i, styles["cell_center"]),
-            _wrap(line.get("model_no", ""), styles["cell"]),
-            Paragraph(desc, styles["cell"]),
-            _wrap(f"{line.get('quantity', 0):g}", styles["cell_right"]),
+        ]
+        if financial:
+            row.append(_wrap(f"{line.get('unit_price', 0):,.2f}", styles["cell_right"]))
+            row.append(_wrap(f"{line.get('subtotal', 0):,.2f}", styles["cell_right"]))
+        row.extend([
+            _wrap(line.get("coo", ""), styles["cell_center"]),
             _wrap(f"{line.get('net_weight', 0):.2f}", styles["cell_right"]),
-            _wrap(f"{line.get('gross_weight', 0):.2f}", styles["cell_right"]),
-            _wrap(f"{line.get('total_net_weight', 0):.2f}", styles["cell_right"]),
-            _wrap(f"{line.get('total_gross_weight', 0):.2f}", styles["cell_right"]),
-            _wrap(ctn_size, styles["cell_center"]),
-            _wrap(f"{line.get('total_cbm', 0):.3f}", styles["cell_right"]),
+            _wrap(f"{line['total_net_weight']:.2f}", styles["cell_right"]),
+            _wrap(line.get("hs_code", ""), styles["cell_center"]),
+            _wrap(line.get("remark", ""), styles["cell"]),
         ])
-    col_widths = [9*mm, 18*mm, 38*mm, 13*mm, 14*mm, 14*mm, 18*mm, 18*mm, 26*mm, 12*mm]
+        data.append(row)
+
+    if financial:
+        weights = [7, 24, 8, 8, 12, 12, 8, 10, 10, 12, 12]
+    else:
+        weights = [7, 28, 9, 9, 9, 11, 11, 13, 13]
+    total_weight = sum(weights)
+    col_widths = [content_width * w / total_weight for w in weights]
+
     table = Table(data, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
+        ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f6fa")]),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EEF4FB")]),
     ]))
     return table
 
 
-def _footer_terms(doc_type: str, company: dict, styles):
-    if doc_type == "PI":
-        text = (
-            "Terms & Conditions / 条款声明：<br/>"
-            "1. This Proforma Invoice is issued for reference only and is subject to final confirmation.<br/>"
-            "2. Prices are valid within the validity period stated above and may change thereafter.<br/>"
-            "3. Delivery time will be confirmed upon receipt of advance payment.<br/>"
-            "本形式发票仅供参考，最终以双方确认为准；价格在有效期内有效，过期需重新确认；交货期以收到预付款后确认为准。"
-        )
-    elif doc_type == "CI":
-        text = (
-            "Declaration / 声明：<br/>"
-            "We hereby certify that this invoice is true and correct, and that the goods are of "
-            "the origin stated above. This invoice is issued for customs clearance purposes.<br/>"
-            "兹证明此发票内容真实准确，货物原产地如上所述。本发票仅用于海关报关用途。"
-        )
-    else:
-        text = (
-            "Note / 备注：<br/>"
-            "This Packing List is issued for customs and shipping purposes. Prices and amounts are "
-            "intentionally omitted in compliance with customs confidentiality requirements.<br/>"
-            "本装箱单仅用于报关及运输用途，出于海关保密规范，不含单价及金额信息。"
-        )
-    return Paragraph(text, styles["footer"])
-
-
-def _bank_info_table(company: dict, styles):
-    text = (
-        f"<b>Bank Details / 银行信息：</b><br/>"
-        f"Bank Name / 开户行：{company.get('bank_name_en', '')} {company.get('bank_name_cn', '')}<br/>"
-        f"Account No. / 账号：{company.get('bank_account', '')}<br/>"
-        f"SWIFT Code：{company.get('swift_code', '')}<br/>"
-        f"Bank Address：{company.get('bank_address_en', '')}"
-    )
-    return Paragraph(text, styles["normal"])
+def _beneficiary_block(banking: dict, styles) -> Table:
+    rows = [
+        ("Beneficiary Name", banking.get("beneficiary_name", "")),
+        ("Beneficiary Bank Name", banking.get("beneficiary_bank_name", "")),
+        ("Swift Code", banking.get("beneficiary_swift_code", "")),
+        ("Beneficiary Bank's Correspondent Bank", banking.get("correspondent_bank", "")),
+        ("Beneficiary Bank Address", banking.get("beneficiary_bank_address", "")),
+        ("Beneficiary Account No.", banking.get("beneficiary_account_no", "")),
+    ]
+    text = "<br/>".join(f"<b>{k}:</b>&nbsp;&nbsp;{v}" for k, v in rows if v)
+    if not text:
+        return None
+    return _boxed_section("Beneficiary Bank Details / 收款银行详情", text, styles, 180 * mm)
 
 
 def _make_doc_template(filepath: str):
     return SimpleDocTemplate(
         filepath, pagesize=A4,
         leftMargin=PAGE_MARGIN, rightMargin=PAGE_MARGIN,
-        topMargin=PAGE_MARGIN, bottomMargin=PAGE_MARGIN,
+        topMargin=HEADER_HEIGHT, bottomMargin=FOOTER_HEIGHT,
         title="Trade Document",
     )
 
 
-def _add_page_number(canvas, doc):
-    canvas.saveState()
-    regular, _ = ensure_fonts_registered()
-    canvas.setFont(regular, 8)
-    canvas.setFillColor(colors.grey)
-    page_text = f"Page {doc.page}"
-    canvas.drawRightString(A4[0] - PAGE_MARGIN, 10 * mm, page_text)
-    canvas.restoreState()
-
-
-def _build_financial_pdf(doc: dict, doc_type: str, filepath: str, company: dict) -> str:
-    """PI 与 CI 共用的构建逻辑，仅标题、条款、是否含付款信息不同"""
+def export_document(doc: dict, filepath: str, company: dict) -> str:
+    """
+    统一单据导出入口。doc['doc_type'] 决定标题与是否显示价格（PL 隐藏价格）。
+    doc 中的 own_snapshot/delivery_snapshot/conditions_snapshot/banking_snapshot
+    为制单时选定模板预设的字段快照。
+    """
     styles = _styles()
-    totals = calc.compute_totals(doc.get("lines", []))
+    doc_type = doc.get("doc_type", "PI")
+    financial = doc_type != "PL"
     currency = doc.get("currency", "USD")
-    doc_number = doc.get("pi_number" if doc_type == "PI" else "ci_number", "")
+    customer = doc.get("customer_snapshot", {})
+    own = doc.get("own_snapshot", {})
+    banking = doc.get("banking_snapshot", {})
 
-    title_en = "PROFORMA INVOICE" if doc_type == "PI" else "COMMERCIAL INVOICE"
-    title_cn = "形式发票" if doc_type == "PI" else "商业发票"
+    totals = calc.compute_totals(doc.get("lines", []))
+    content_width = A4[0] - 2 * PAGE_MARGIN
+    col_width = (content_width - 6 * mm) / 2
 
     elements = []
-    elements.append(_build_header(company, title_en, title_cn, styles))
-    elements.append(Spacer(1, 6))
-    elements.append(_party_info_table(doc, doc_number, styles, include_payment=(doc_type == "PI")))
-    elements.append(Spacer(1, 8))
-    elements.append(_financial_lines_table(totals["lines"], currency, styles))
-    elements.append(Spacer(1, 4))
-
-    total_line = Table(
-        [["", f"Total Amount / 总金额：{currency} {totals['total_amount']:,.2f}"]],
-        colWidths=[130 * mm, 50 * mm],
+    top_row = Table(
+        [[_left_column(doc, styles, col_width), _right_column(doc, styles, col_width)]],
+        colWidths=[col_width, col_width + 6 * mm],
     )
-    total_line.setStyle(TableStyle([
-        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
-        ("FONTNAME", (1, 0), (1, 0), styles["bold_small"].fontName),
-        ("FONTSIZE", (1, 0), (1, 0), 9.5),
+    top_row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
-    elements.append(total_line)
-    elements.append(Spacer(1, 3))
-    elements.append(Paragraph(calc.amount_in_words(totals["total_amount"], currency), styles["bold_small"]))
+    elements.append(top_row)
     elements.append(Spacer(1, 8))
 
-    summary_text = (
-        f"Total Qty / 总数量：{totals['total_quantity']:g}    "
-        f"Total N.W. / 总净重：{totals['total_net_weight']:.2f} kg    "
-        f"Total G.W. / 总毛重：{totals['total_gross_weight']:.2f} kg    "
-        f"Total CBM / 总体积：{totals['total_cbm']:.3f}"
-    )
-    elements.append(Paragraph(summary_text, styles["normal"]))
+    elements.append(_item_table(totals["lines"], currency, styles, financial, content_width))
+    elements.append(Spacer(1, 6))
+
+    if financial:
+        total_line = Table(
+            [["", f"Total Amount: {currency} {totals['total_amount']:,.2f}"]],
+            colWidths=[content_width - 60 * mm, 60 * mm],
+        )
+        total_line.setStyle(TableStyle([
+            ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+            ("FONTNAME", (1, 0), (1, 0), styles["bold_name"]),
+            ("FONTSIZE", (1, 0), (1, 0), 9.5),
+        ]))
+        elements.append(total_line)
+        elements.append(Spacer(1, 3))
+        elements.append(Paragraph(calc.amount_in_words(totals["total_amount"], currency), styles["bold_small"]))
+        elements.append(Spacer(1, 6))
+
+    summary_parts = [f"Total Qty: {totals['total_quantity']:g}", f"Total N.W.: {totals['total_net_weight']:.2f} kg"]
+    elements.append(Paragraph("    ".join(summary_parts), styles["normal"]))
     elements.append(Spacer(1, 8))
 
-    if doc_type == "PI":
-        elements.append(_bank_info_table(company, styles))
+    if doc.get("remark"):
+        elements.append(_boxed_section("Note / 备注", _nl2br(doc.get("remark")), styles, content_width))
         elements.append(Spacer(1, 8))
 
-    elements.append(HRFlowable(width="100%", color=colors.lightgrey))
-    elements.append(Spacer(1, 4))
-    elements.append(_footer_terms(doc_type, company, styles))
+    beneficiary = _beneficiary_block(banking, styles)
+    if beneficiary:
+        elements.append(beneficiary)
 
+    context = {"styles": styles, "own": own, "customer": customer, "doc_type": doc_type, "banking": banking}
     template = _make_doc_template(filepath)
-    template.build(elements, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
+    template.build(elements, canvasmaker=_canvas_factory(context))
     return filepath
 
 
+# ---------------- 向后兼容别名（历史单据/外部调用可能仍使用旧函数名） ----------------
 def export_pi(doc: dict, filepath: str, company: dict) -> str:
-    return _build_financial_pdf(doc, "PI", filepath, company)
+    doc = dict(doc); doc["doc_type"] = "PI"
+    return export_document(doc, filepath, company)
 
 
 def export_ci(doc: dict, filepath: str, company: dict) -> str:
-    return _build_financial_pdf(doc, "CI", filepath, company)
+    doc = dict(doc); doc["doc_type"] = "CI"
+    return export_document(doc, filepath, company)
 
 
 def export_pl(doc: dict, filepath: str, company: dict) -> str:
-    styles = _styles()
-    totals = calc.compute_totals(doc.get("lines", []))
-    doc_number = doc.get("pl_number", "")
-
-    elements = []
-    elements.append(_build_header(company, "PACKING LIST", "装箱单", styles))
-    elements.append(Spacer(1, 6))
-    elements.append(_party_info_table(doc, doc_number, styles, include_payment=False))
-    elements.append(Spacer(1, 8))
-    elements.append(_packing_lines_table(totals["lines"], styles))
-    elements.append(Spacer(1, 6))
-
-    summary_text = (
-        f"<b>Total Qty / 总数量：</b>{totals['total_quantity']:g}    "
-        f"<b>Total N.W. / 总净重：</b>{totals['total_net_weight']:.2f} kg    "
-        f"<b>Total G.W. / 总毛重：</b>{totals['total_gross_weight']:.2f} kg    "
-        f"<b>Total CBM / 总体积：</b>{totals['total_cbm']:.3f}"
-    )
-    elements.append(Paragraph(summary_text, styles["bold_small"]))
-    elements.append(Spacer(1, 8))
-    elements.append(HRFlowable(width="100%", color=colors.lightgrey))
-    elements.append(Spacer(1, 4))
-    elements.append(_footer_terms("PL", company, styles))
-
-    template = _make_doc_template(filepath)
-    template.build(elements, onFirstPage=_add_page_number, onLaterPages=_add_page_number)
-    return filepath
+    doc = dict(doc); doc["doc_type"] = "PL"
+    return export_document(doc, filepath, company)

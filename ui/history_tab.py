@@ -13,11 +13,10 @@ from core import storage, pdf_export
 from core.paths import get_exports_dir
 
 COLUMNS = [
-    ("pi_number", "PI 编号"),
-    ("ci_number", "CI 编号"),
-    ("pl_number", "PL 编号"),
+    ("doc_type", "类型"),
+    ("doc_number", "单据编号"),
     ("date", "日期"),
-    ("_customer_name", "客户"),
+    ("_customer_name", "收件方"),
     ("currency", "币种"),
 ]
 
@@ -39,7 +38,7 @@ class HistoryTab(QWidget):
 
         top = QHBoxLayout()
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("按 PI/CI/PL 编号或客户名称搜索…")
+        self.search_box.setPlaceholderText("按单据编号或收件方名称搜索…")
         self.search_box.textChanged.connect(self._refresh_table)
         top.addWidget(QLabel("搜索："))
         top.addWidget(self.search_box)
@@ -110,9 +109,7 @@ class HistoryTab(QWidget):
         new_doc = copy.deepcopy(doc)
         from core.models import new_id
         new_doc["id"] = new_id()
-        new_doc["pi_number"] = ""
-        new_doc["ci_number"] = ""
-        new_doc["pl_number"] = ""
+        new_doc["doc_number"] = ""
         self.on_duplicate_to_document(new_doc)
         QMessageBox.information(self, "提示", "已复制到「制单」页面，请生成新的单据编号后保存")
 
@@ -124,17 +121,13 @@ class HistoryTab(QWidget):
         company = storage.load_company()
         export_dir = get_exports_dir()
         try:
-            pi = pdf_export.export_pi(doc, os.path.join(export_dir, f"{doc.get('pi_number', 'PI')}.pdf"), company)
-            ci = pdf_export.export_ci(doc, os.path.join(export_dir, f"{doc.get('ci_number', 'CI')}.pdf"), company)
-            pl = pdf_export.export_pl(doc, os.path.join(export_dir, f"{doc.get('pl_number', 'PL')}.pdf"), company)
+            path = pdf_export.export_document(
+                doc, os.path.join(export_dir, f"{doc.get('doc_number', 'DOC')}.pdf"), company
+            )
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"PDF 生成过程中发生错误：{e}")
             return
-        QMessageBox.information(
-            self, "导出成功",
-            f"三份单据已导出至：\n{export_dir}\n\n"
-            f"{os.path.basename(pi)}\n{os.path.basename(ci)}\n{os.path.basename(pl)}",
-        )
+        QMessageBox.information(self, "导出成功", f"单据已导出至：\n{path}")
 
     def _delete_selected(self):
         doc = self._selected_document()
@@ -142,7 +135,7 @@ class HistoryTab(QWidget):
             QMessageBox.information(self, "提示", "请先选择一条历史单据")
             return
         reply = QMessageBox.question(
-            self, "确认删除", f"确定要删除单据「{doc.get('pi_number', '')}」的历史记录吗？"
+            self, "确认删除", f"确定要删除单据「{doc.get('doc_number', '')}」的历史记录吗？"
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.documents.remove(doc)

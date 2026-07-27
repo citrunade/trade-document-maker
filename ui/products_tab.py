@@ -70,6 +70,7 @@ class ProductEditDialog(QDialog):
         self.currency = QComboBox()
         self.currency.addItems(CURRENCIES)
         self.currency.setCurrentText(self.product.get("currency", "USD"))
+        self.coo = QLineEdit(self.product.get("coo", ""))
         self.remark = QLineEdit(self.product.get("remark", ""))
 
         form.addRow("型号：", self.model_no)
@@ -84,6 +85,7 @@ class ProductEditDialog(QDialog):
         form.addRow("外包装高(mm)：", self.height_mm)
         form.addRow("单价：", self.unit_price)
         form.addRow("币种：", self.currency)
+        form.addRow("原产国/地区 COO：", self.coo)
         form.addRow("备注：", self.remark)
         layout.addLayout(form)
 
@@ -108,6 +110,7 @@ class ProductEditDialog(QDialog):
             "height_mm": self.height_mm.value(),
             "unit_price": self.unit_price.value(),
             "currency": self.currency.currentText(),
+            "coo": self.coo.text().strip(),
             "remark": self.remark.text().strip(),
         })
         return self.product
