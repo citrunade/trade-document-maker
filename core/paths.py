@@ -27,6 +27,24 @@ def get_data_dir() -> str:
     return path
 
 
+def check_data_dir_writable() -> bool:
+    """
+    实际写入一个探测文件以确认 data/ 目录真正可写。
+    背景：若 EXE 被放在「C:\\Program Files」等受保护目录下，Windows 可能会
+    将写入操作悄悄重定向到 VirtualStore，导致程序看似保存成功，
+    但下次读取（或换一个用户登录）时数据却不存在——现象类似"保存的内容消失了"。
+    在启动时提前探测，比让用户遇到诡异的"数据丢失"更容易定位问题。
+    """
+    path = os.path.join(get_data_dir(), ".write_test")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
 def get_data_path(*parts: str) -> str:
     """获取 data/ 目录下某个文件/子路径的完整路径。"""
     return os.path.join(get_data_dir(), *parts)

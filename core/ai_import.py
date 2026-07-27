@@ -214,11 +214,20 @@ DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提�
     "unit": "单位",
     "quantity": 0.0,
     "unit_price": 0.0,
+    "amount": 0.0,
     "coo": "原产国/地区代码（如 DE/CN，找不到留空）",
     "remark": "备注（找到才填写）"
     }
   ]
 }
+字段说明（务必区分，不要混淆）：
+- quantity：数量/件数（Qty），即购买的件数，通常是较小的整数或简单数字。
+- unit_price：单价（Unit Price），即每一件的价格，不是总价/金额（Amount/Total）。
+  如果表格中同时存在「单价」和「金额/总价」两列，金额 = 数量 × 单价，
+  请只取「单价」列的值填入 unit_price，绝不能把金额或数量误填入 unit_price，
+  也不能把单价误填入 quantity。
+- amount：金额/总价（Amount/Total），如表格中有该列，原样提取其数字，不要自己计算；
+  找不到该列则填 0。此字段仅用于核对 quantity × unit_price 是否正确，不会直接使用。
 只返回有效 JSON 对象，不要包含任何其他说明文字。"""
 
 
@@ -345,6 +354,17 @@ def import_document_lines(path: str, config: dict) -> list:
     for item in data:
         if not isinstance(item, dict):
             continue
+        quantity = _to_float(item.get("quantity", 0))
+        unit_price = _to_float(item.get("unit_price", 0))
+        amount = _to_float(item.get("amount", 0))
+        remark = str(item.get("remark", ""))
+
+        # 若源文件本身含有「金额」列，用 数量×单价 与其核对：
+        # 注意乘法满足交换律，此核对无法判断数量与单价是否被互换填反，
+        # 但能发现两者之一被识别成完全错误数值的情况，提醒用户核对。
+        if amount and abs(quantity * unit_price - amount) > max(0.01, amount * 0.01):
+            remark = (remark + " ⚠数量×单价与金额不符，请核对").strip()
+
         pseudo_product = {
             "id": "",
             "model_no": str(item.get("model_no", "")),
@@ -352,16 +372,16 @@ def import_document_lines(path: str, config: dict) -> list:
             "name_en": str(item.get("name_en", "")),
             "hs_code": str(item.get("hs_code", "")),
             "unit": str(item.get("unit", "pcs")) or "pcs",
-            "unit_price": _to_float(item.get("unit_price", 0)),
+            "unit_price": unit_price,
             "net_weight": 0.0,
             "gross_weight": 0.0,
             "length_mm": 0.0,
             "width_mm": 0.0,
             "height_mm": 0.0,
             "coo": str(item.get("coo", "")),
-            "remark": str(item.get("remark", "")),
+            "remark": remark,
         }
-        line = make_doc_line(pseudo_product, quantity=_to_float(item.get("quantity", 0)))
+        line = make_doc_line(pseudo_product, quantity=quantity)
         lines.append(line)
     return lines
 

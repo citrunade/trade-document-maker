@@ -149,8 +149,14 @@ class TemplateCategoryPanel(QWidget):
         dialog = TemplateEditDialog(self, self.category)
         if dialog.exec():
             data = dialog.get_data()
-            self._category_list().append(data)
-            storage.save_templates(self.templates)
+            storage.log_debug(f"新增模板预设 category={self.category} data={data}")
+            try:
+                self._category_list().append(data)
+                storage.save_templates(self.templates)
+            except Exception as e:
+                storage.log_error(f"新增模板预设失败 category={self.category} data={data}", e)
+                QMessageBox.critical(self, "保存失败", f"保存预设时发生错误，已记录到 data/error.log：\n{e}")
+                return
             self._refresh_list()
 
     def _edit(self):
@@ -160,8 +166,14 @@ class TemplateCategoryPanel(QWidget):
             return
         dialog = TemplateEditDialog(self, self.category, template)
         if dialog.exec():
-            dialog.get_data()
-            storage.save_templates(self.templates)
+            data = dialog.get_data()
+            storage.log_debug(f"编辑模板预设 category={self.category} data={data}")
+            try:
+                storage.save_templates(self.templates)
+            except Exception as e:
+                storage.log_error(f"编辑模板预设失败 category={self.category} data={data}", e)
+                QMessageBox.critical(self, "保存失败", f"保存预设时发生错误，已记录到 data/error.log：\n{e}")
+                return
             self._refresh_list()
 
     def _delete(self):

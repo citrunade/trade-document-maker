@@ -14,6 +14,32 @@ from typing import Any
 from core.paths import get_data_path, get_backups_dir, get_data_dir
 
 
+def log_error(context: str, exc: Exception) -> None:
+    """
+    将异常追加写入 data/error.log，用于排查"看似保存成功但数据丢失"这类
+    在开发环境无法复现、只在特定用户环境出现的问题。日志写入本身绝不能
+    再抛出异常导致程序崩溃，因此内部吞掉所有错误。
+    """
+    try:
+        import traceback
+        path = get_data_path("error.log")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().isoformat()}] {context}\n")
+            f.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+    except Exception:
+        pass
+
+
+def log_debug(context: str) -> None:
+    """同上，但用于记录正常流程中的排查信息（无异常时也可调用）。"""
+    try:
+        path = get_data_path("error.log")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now().isoformat()}] {context}\n")
+    except Exception:
+        pass
+
+
 def _read_json(filename: str, default: Any) -> Any:
     path = get_data_path(filename)
     if not os.path.exists(path):

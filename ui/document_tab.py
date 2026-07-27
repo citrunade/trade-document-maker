@@ -321,6 +321,7 @@ class DocumentTab(QWidget):
         review_columns = [
             ("model_no", "型号"), ("name_cn", "中文品名"), ("name_en", "英文品名"),
             ("hs_code", "HS编码"), ("unit", "单位"), ("quantity", "数量"), ("unit_price", "单价"),
+            ("remark", "备注"),
         ]
         dialog = ImportReviewDialog(self, "审核 AI 识别的产品明细", review_columns, extracted)
         if not dialog.exec():
