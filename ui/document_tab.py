@@ -210,6 +210,7 @@ class DocumentTab(QWidget):
         self.table = QTableWidget(0, len(FINANCIAL_LINE_COLUMNS))
         self.table.setHorizontalHeaderLabels(FINANCIAL_LINE_COLUMNS)
         self.table.setAlternatingRowColors(True)
+        self.table.cellChanged.connect(self._on_cell_changed)
         # 保证产品明细表始终至少能看到约 6 行，避免被上方较长的表单挤到只剩一行
         self.table.setMinimumHeight(240)
         lines_layout.addWidget(self.table)
@@ -399,9 +400,36 @@ class DocumentTab(QWidget):
                 header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
                 self.table.setColumnWidth(col, 90)
 
+    def _on_cell_changed(self, row: int, col: int):
+        if row >= len(self.document["lines"]):
+            return
+        item = self.table.item(row, col)
+        if item is None:
+            return
+        text = item.text()
+        line = self.document["lines"][row]
+        financial = self._is_financial()
+        if financial:
+            field_map = {1: "_desc", 3: "unit", 6: "coo", 7: "_nw", 9: "hs_code", 10: "remark"}
+        else:
+            field_map = {1: "_desc", 3: "unit", 4: "coo", 5: "_nw", 7: "hs_code", 8: "remark"}
+        field = field_map.get(col)
+        if field == "_desc":
+            parts = text.split("\n", 1)
+            line["name_en"] = parts[0]
+            line["name_cn"] = parts[1] if len(parts) > 1 else ""
+        elif field == "_nw":
+            try:
+                line["net_weight"] = float(text)
+            except ValueError:
+                pass
+        elif field:
+            line[field] = text
+
     def _rebuild_table(self, computed_lines: list):
         financial = self._is_financial()
         columns = FINANCIAL_LINE_COLUMNS if financial else PL_LINE_COLUMNS
+        self.table.blockSignals(True)
         self.table.setColumnCount(len(columns))
         self.table.setHorizontalHeaderLabels(columns)
         self._apply_column_sizing(columns)
@@ -447,6 +475,8 @@ class DocumentTab(QWidget):
             del_btn = QPushButton("删除")
             del_btn.clicked.connect(lambda _, r=row: self._remove_line(r))
             self.table.setCellWidget(row, col, del_btn)
+
+        self.table.blockSignals(False)
 
     def _update_computed_cells(self, computed_lines: list):
         financial = self._is_financial()
