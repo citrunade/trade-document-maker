@@ -139,8 +139,8 @@ def export_document(doc: dict, filepath: str) -> str:
     document.add_paragraph()
 
     incoterm_line = conditions.get("incoterm", "")
-    if doc.get("destination"):
-        incoterm_line = f"{incoterm_line}  {doc.get('destination')}".strip()
+    if incoterm_line and doc.get("destination"):
+        incoterm_line = f"{incoterm_line}  {doc.get('destination')}"
 
     info_table = document.add_table(rows=1, cols=2)
     info_table.alignment = WD_TABLE_ALIGNMENT.CENTER

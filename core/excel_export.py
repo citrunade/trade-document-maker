@@ -90,8 +90,8 @@ def export_document(doc: dict, filepath: str) -> str:
 
     # Delivery Address (左) + Conditions (左，下方) / Information (右)
     incoterm_line = conditions.get("incoterm", "")
-    if doc.get("destination"):
-        incoterm_line = f"{incoterm_line}  {doc.get('destination')}".strip()
+    if incoterm_line and doc.get("destination"):
+        incoterm_line = f"{incoterm_line}  {doc.get('destination')}"
 
     r = row
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)

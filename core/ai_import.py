@@ -215,7 +215,6 @@ DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提�
     "quantity": 0.0,
     "unit_price": 0.0,
     "amount": 0.0,
-    "coo": "原产国/地区代码（如 DE/CN，找不到留空）",
     "remark": "备注（找到才填写）"
     }
   ]

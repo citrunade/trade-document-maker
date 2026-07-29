@@ -231,8 +231,8 @@ def _left_column(doc: dict, styles, width: float):
     delivery_box = _boxed_section("Delivery Address", delivery_text, styles, width)
 
     incoterm_line = conditions.get("incoterm", "")
-    if doc.get("destination"):
-        incoterm_line = f"{incoterm_line}  {doc.get('destination')}".strip()
+    if incoterm_line and doc.get("destination"):
+        incoterm_line = f"{incoterm_line}  {doc.get('destination')}"
     conditions_text = (
         f"<b>Terms of Payment</b>&nbsp;&nbsp;{conditions.get('terms_of_payment', '')}<br/><br/>"
         f"<b>Incoterms</b>&nbsp;&nbsp;{incoterm_line}<br/><br/>"
