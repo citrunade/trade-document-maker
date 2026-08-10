@@ -271,9 +271,9 @@ def _right_column(doc: dict, styles, width: float):
 
 
 # ---------------- 产品明细表 ----------------
-FINANCIAL_HEADERS = ["No.", "Description", "Qty", "Unit", "Unit Price", "Total Price",
+FINANCIAL_HEADERS = ["No.", "Model", "Description", "Qty", "Unit", "Unit Price", "Total Price",
                      "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
-PL_HEADERS = ["No.", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
+PL_HEADERS = ["No.", "Model", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
 
 
 def _item_table(computed_lines: list, currency: str, styles, financial: bool, content_width: float):
@@ -289,6 +289,7 @@ def _item_table(computed_lines: list, currency: str, styles, financial: bool, co
 
         row = [
             _wrap(i, styles["cell_center"]),
+            Paragraph(line.get("model_no", "") or "&nbsp;", styles["cell"]),
             Paragraph(desc, styles["cell"]),
             _wrap(f"{line.get('quantity', 0):g}", styles["cell_right"]),
             _wrap(line.get("unit", ""), styles["cell_center"]),
@@ -306,9 +307,9 @@ def _item_table(computed_lines: list, currency: str, styles, financial: bool, co
         data.append(row)
 
     if financial:
-        weights = [7, 24, 8, 8, 12, 12, 8, 10, 10, 12, 12]
+        weights = [6, 13, 20, 7, 7, 11, 11, 8, 9, 9, 11, 11]
     else:
-        weights = [7, 28, 9, 9, 9, 11, 11, 13, 13]
+        weights = [6, 15, 24, 8, 8, 8, 10, 10, 12, 12]
     total_weight = sum(weights)
     col_widths = [content_width * w / total_weight for w in weights]
 

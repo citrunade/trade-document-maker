@@ -179,10 +179,10 @@ def export_document(doc: dict, filepath: str) -> str:
     # ---------------- 明细表 ----------------
     totals = calc.compute_totals(doc.get("lines", []))
     if financial:
-        headers = ["No.", "Description", "Qty", "Unit", "Unit Price", "Total Price",
+        headers = ["No.", "Model", "Description", "Qty", "Unit", "Unit Price", "Total Price",
                    "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
     else:
-        headers = ["No.", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
+        headers = ["No.", "Model", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
 
     table = document.add_table(rows=1, cols=len(headers))
     table.style = "Table Grid"
@@ -196,7 +196,7 @@ def export_document(doc: dict, filepath: str) -> str:
         desc = line.get("name_en", "")
         if line.get("name_cn"):
             desc += f"\n{line.get('name_cn')}"
-        values = [str(i), desc, f"{line.get('quantity', 0):g}", line.get("unit", "")]
+        values = [str(i), line.get("model_no", ""), desc, f"{line.get('quantity', 0):g}", line.get("unit", "")]
         if financial:
             values += [f"{line.get('unit_price', 0):,.2f}", f"{line.get('subtotal', 0):,.2f}"]
         values += [line.get("coo", ""), f"{line.get('net_weight', 0):.2f}",

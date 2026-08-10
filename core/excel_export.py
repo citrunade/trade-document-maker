@@ -147,10 +147,10 @@ def export_document(doc: dict, filepath: str) -> str:
     # 明细表
     totals = calc.compute_totals(doc.get("lines", []))
     if financial:
-        headers = ["No.", "Description EN", "Description CN", "Qty", "Unit", "Unit Price",
+        headers = ["No.", "Model", "Description EN", "Description CN", "Qty", "Unit", "Unit Price",
                    "Total Price", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
     else:
-        headers = ["No.", "Description EN", "Description CN", "Qty", "Unit",
+        headers = ["No.", "Model", "Description EN", "Description CN", "Qty", "Unit",
                    "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
     for c, h in enumerate(headers, start=1):
         _set(ws, row, c, h, font=WHITE_BOLD, fill=HEADER_FILL, align="center")
@@ -160,6 +160,7 @@ def export_document(doc: dict, filepath: str) -> str:
     for i, line in enumerate(totals["lines"], start=1):
         c = 1
         _set(ws, row, c, i); c += 1
+        _set(ws, row, c, line.get("model_no", "")); c += 1
         _set(ws, row, c, line.get("name_en", "")); c += 1
         _set(ws, row, c, line.get("name_cn", "")); c += 1
         _set(ws, row, c, line.get("quantity", 0)); c += 1

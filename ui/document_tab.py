@@ -27,11 +27,11 @@ DOC_TITLES = {"PI": "PROFORMA INVOICE 形式发票", "CI": "COMMERCIAL INVOICE �
 
 # 财务类单据（PI/CI）显示单价与金额；PL 不显示价格信息
 FINANCIAL_LINE_COLUMNS = [
-    "No.", "Description", "Qty", "Unit", "Unit Price", "Total Price",
+    "No.", "Model", "Description", "Qty", "Unit", "Unit Price", "Total Price",
     "COO", "Net Weight", "Total N.W.", "HS Code", "Remark", "操作",
 ]
 PL_LINE_COLUMNS = [
-    "No.", "Description", "Qty", "Unit",
+    "No.", "Model", "Description", "Qty", "Unit",
     "COO", "Net Weight", "Total N.W.", "HS Code", "Remark", "操作",
 ]
 
@@ -351,8 +351,8 @@ class DocumentTab(QWidget):
 
     def _on_qty_or_price_changed(self):
         financial = self._is_financial()
-        qty_col = 2
-        price_col = 4 if financial else None
+        qty_col = 3
+        price_col = 5 if financial else None
         for row in range(self.table.rowCount()):
             qty_spin = self.table.cellWidget(row, qty_col)
             if qty_spin is not None:
@@ -410,9 +410,9 @@ class DocumentTab(QWidget):
         line = self.document["lines"][row]
         financial = self._is_financial()
         if financial:
-            field_map = {1: "_desc", 3: "unit", 6: "coo", 7: "_nw", 9: "hs_code", 10: "remark"}
+            field_map = {1: "model_no", 2: "_desc", 4: "unit", 7: "coo", 8: "_nw", 10: "hs_code", 11: "remark"}
         else:
-            field_map = {1: "_desc", 3: "unit", 4: "coo", 5: "_nw", 7: "hs_code", 8: "remark"}
+            field_map = {1: "model_no", 2: "_desc", 4: "unit", 5: "coo", 6: "_nw", 8: "hs_code", 9: "remark"}
         field = field_map.get(col)
         if field == "_desc":
             parts = text.split("\n", 1)
@@ -432,12 +432,14 @@ class DocumentTab(QWidget):
         self.table.blockSignals(True)
         self.table.setColumnCount(len(columns))
         self.table.setHorizontalHeaderLabels(columns)
+        self.table.clearContents()
         self._apply_column_sizing(columns)
         self.table.setRowCount(len(computed_lines))
 
         for row, line in enumerate(computed_lines):
             col = 0
             self.table.setItem(row, col, QTableWidgetItem(str(row + 1))); col += 1
+            self.table.setItem(row, col, QTableWidgetItem(line.get("model_no", ""))); col += 1
 
             desc = line.get("name_en", "")
             if line.get("name_cn"):
@@ -481,12 +483,12 @@ class DocumentTab(QWidget):
     def _update_computed_cells(self, computed_lines: list):
         financial = self._is_financial()
         for row, line in enumerate(computed_lines):
-            nw_col = 7 if financial else 5
+            nw_col = 8 if financial else 6
             tnw_col = nw_col + 1
             self.table.setItem(row, nw_col, QTableWidgetItem(f"{line.get('net_weight', 0):.2f}"))
             self.table.setItem(row, tnw_col, QTableWidgetItem(f"{line['total_net_weight']:.2f}"))
             if financial:
-                self.table.setItem(row, 5, QTableWidgetItem(f"{line['subtotal']:.2f}"))
+                self.table.setItem(row, 6, QTableWidgetItem(f"{line['subtotal']:.2f}"))
 
     # ---------------- persistence ----------------
     def _selected_template_snapshot(self, combo: QComboBox) -> dict:
