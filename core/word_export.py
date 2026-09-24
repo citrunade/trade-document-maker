@@ -20,6 +20,7 @@ DOC_TITLES = {
 
 CJK_FONT = "Microsoft YaHei"
 HEADER_BLUE = RGBColor(0x5B, 0x9B, 0xD5)
+NUMERIC_HEADERS = {"Qty", "Unit Price", "Total Price", "Net Weight", "Total N.W."}
 
 
 def _set_cjk(run, font_name=CJK_FONT, size=None, bold=None, color=None):
@@ -55,6 +56,12 @@ def _cell_text(cell, text="", size=9, bold=False, color=None):
     run = p.add_run(text)
     _set_cjk(run, size=size, bold=bold, color=color)
     return p
+
+
+def _no_wrap(cell):
+    """金额/重量/数量单元格禁止换行，由 Word 自动加宽该列而不是把数字拆成两行"""
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcPr.append(tcPr.makeelement(qn("w:noWrap"), {}))
 
 
 def _shade_cell(cell, hex_color):
@@ -161,7 +168,7 @@ def export_document(doc: dict, filepath: str) -> str:
     _box(left_col, "Delivery Address / Conditions", [
         (delivery.get("company_name", ""), ""),
         ("", delivery.get("address", "")),
-        ("Terms of Payment", conditions.get("terms_of_payment", "")),
+        ("Terms of Payment", calc.effective_terms_of_payment(doc)),
         ("Incoterms", incoterm_line),
         ("Shipment by", conditions.get("shipment_by", "")),
     ])
@@ -196,21 +203,29 @@ def export_document(doc: dict, filepath: str) -> str:
         desc = line.get("name_en", "")
         if line.get("name_cn"):
             desc += f"\n{line.get('name_cn')}"
-        values = [str(i), line.get("model_no", ""), desc, f"{line.get('quantity', 0):g}", line.get("unit", "")]
+        values = [str(i), line.get("model_no", ""), desc, calc.fmt_qty(line.get("quantity", 0)), line.get("unit", "")]
         if financial:
             values += [f"{line.get('unit_price', 0):,.2f}", f"{line.get('subtotal', 0):,.2f}"]
-        values += [line.get("coo", ""), f"{line.get('net_weight', 0):.2f}",
-                   f"{line['total_net_weight']:.2f}", line.get("hs_code", ""), line.get("remark", "")]
+        values += [line.get("coo", ""), calc.fmt_weight(line.get("net_weight", 0)),
+                   calc.fmt_weight(line["total_net_weight"]), line.get("hs_code", ""), line.get("remark", "")]
         for c, val in enumerate(values):
-            _cell_text(row_cells[c], val, size=8)
+            p = _cell_text(row_cells[c], val, size=8)
+            if headers[c] in NUMERIC_HEADERS:
+                p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                _no_wrap(row_cells[c])
 
     document.add_paragraph()
     if financial:
         _para(document, f"Total Amount: {currency} {totals['total_amount']:,.2f}", size=9.5, bold=True,
               align=WD_ALIGN_PARAGRAPH.RIGHT)
         _para(document, calc.amount_in_words(totals["total_amount"], currency), size=8.5, bold=True)
+        for label, amount in calc.payment_schedule(totals["total_amount"], doc.get("deposit_pct")):
+            _para(document, f"{label}:  {currency} {amount:,.2f}", size=9, bold=True)
 
-    _para(document, f"Total Qty: {totals['total_quantity']:g}    Total N.W.: {totals['total_net_weight']:.2f} kg", size=9)
+    summary = f"Total Qty: {calc.fmt_qty(totals['total_quantity'])}"
+    if totals["total_net_weight"]:
+        summary += f"    Total N.W.: {totals['total_net_weight']:.2f} kg"
+    _para(document, summary, size=9)
     document.add_paragraph()
 
     if doc.get("remark"):

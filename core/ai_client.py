@@ -13,8 +13,10 @@ import requests
 
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-DEFAULT_TEXT_MODEL = "qwen-flash"
-DEFAULT_VISION_MODEL = "qwen3-vl-flash"
+# flash 系列在表格列对齐（数量/单价/金额混淆）上错误较多，升级为 plus 系列：
+# 单次 PO 导入约数千 token，费用仍不足 0.01 元。
+DEFAULT_TEXT_MODEL = "qwen-plus"
+DEFAULT_VISION_MODEL = "qwen3-vl-plus"
 REQUEST_TIMEOUT = (15, 120)
 
 
@@ -62,6 +64,8 @@ def _post_chat_completion(
         "model": model,
         "messages": messages,
         "temperature": 0.1,
+        # 字段提取不需要深度思考；关闭可避免混合思考模型更慢、更贵，且 JSON Mode 不支持思考模式
+        "enable_thinking": False,
     }
     if json_mode:
         # Qwen JSON Mode要求提示词中出现“JSON”；现有提取提示词均满足此条件。
@@ -151,24 +155,33 @@ def extract_from_image(
     image_bytes: bytes,
     mime_type: str = "image/png",
 ) -> str:
-    data_uri = (
-        f"data:{mime_type};base64,"
-        + base64.b64encode(image_bytes).decode("ascii")
-    )
+    return extract_from_images(api_key, base_url, model, prompt, [image_bytes], mime_type)
+
+
+def extract_from_images(
+    api_key: str,
+    base_url: str,
+    model: str,
+    prompt: str,
+    images: list,
+    mime_type: str = "image/png",
+) -> str:
+    """多张图片（如多页扫描件）放在同一次请求中，由模型合并提取为一份 JSON。"""
+    content = [
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime_type};base64," + base64.b64encode(img).decode("ascii"),
+            },
+        }
+        for img in images
+    ]
+    hint = "请识别并提取这份文件中的字段，只返回有效 JSON。"
+    if len(images) > 1:
+        hint = f"以下 {len(images)} 张图片是同一份文件的连续页面，请合并提取全部字段，只返回有效 JSON。"
+    content.append({"type": "text", "text": hint})
     messages = [
         {"role": "system", "content": prompt},
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image_url",
-                    "image_url": {"url": data_uri},
-                },
-                {
-                    "type": "text",
-                    "text": "请识别并提取这份文件中的字段，只返回有效 JSON。",
-                },
-            ],
-        },
+        {"role": "user", "content": content},
     ]
     return _post_chat_completion(api_key, base_url, model, messages)

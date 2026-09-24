@@ -115,3 +115,56 @@ def amount_in_words(amount: float, currency: str = "USD") -> str:
     else:
         text += " ONLY"
     return text
+
+
+# ---------------- 付款条件（定金/尾款拆分） ----------------
+# deposit_pct 为定金百分比：None 表示不拆分（沿用 Conditions 模板中的付款方式文字），
+# 100 表示 100% 预付，其余如 50 表示 50% 定金 + 50% 尾款。
+PAYMENT_PRESETS = [
+    ("按模板（不拆分金额）", None),
+    ("100% 预付", 100),
+    ("50% 定金 + 50% 尾款", 50),
+    ("30% 定金 + 70% 尾款", 30),
+]
+
+
+def payment_terms_text(deposit_pct) -> str:
+    if deposit_pct is None:
+        return ""
+    if deposit_pct >= 100:
+        return "100% T/T in advance"
+    return f"{deposit_pct:g}% deposit by T/T, {100 - deposit_pct:g}% balance before shipment"
+
+
+def payment_schedule(total_amount: float, deposit_pct) -> list:
+    """
+    返回 [(label, amount), ...]。尾款 = 总额 - 定金，保证两次付款相加恰好等于总额，
+    不会因四舍五入产生 0.01 的差额。
+    """
+    if deposit_pct is None:
+        return []
+    if deposit_pct >= 100:
+        return [("100% Payment in Advance", round(total_amount, 2))]
+    deposit = round(total_amount * deposit_pct / 100, 2)
+    balance = round(total_amount - deposit, 2)
+    return [
+        (f"{deposit_pct:g}% Deposit (due upon order confirmation)", deposit),
+        (f"{100 - deposit_pct:g}% Balance (due before shipment)", balance),
+    ]
+
+
+def fmt_weight(value: float) -> str:
+    """重量为 0（即没有重量信息）时显示空白，而不是 0.00。"""
+    return f"{value:.2f}" if value else ""
+
+
+def effective_terms_of_payment(doc: dict) -> str:
+    """选定了付款拆分时用其生成的文字，否则沿用 Conditions 模板中的付款方式。"""
+    return payment_terms_text(doc.get("deposit_pct")) or doc.get("conditions_snapshot", {}).get("terms_of_payment", "")
+
+
+def fmt_qty(value: float) -> str:
+    """数量：整数不带小数位，带千分位；避免 :g 在大数时输出科学计数法（如 1.2e+06）。"""
+    if float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{value:,.3f}".rstrip("0").rstrip(".")

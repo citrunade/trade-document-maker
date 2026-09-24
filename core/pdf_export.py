@@ -19,6 +19,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfgen import canvas as canvas_module
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 from core import calc
 from core.fonts import ensure_fonts_registered
@@ -63,6 +64,25 @@ def _wrap(text, style):
 
 def _nl2br(text: str) -> str:
     return (text or "").replace("\r\n", "\n").replace("\n", "<br/>")
+
+
+CELL_PADDING = 3
+MIN_FIT_FONT_SIZE = 3.5
+
+
+def _fit_one_line(text: str, style, col_width: float) -> Paragraph:
+    """
+    金额/重量/数量等数字不允许在单元格内换行（如 "15,827.8" / "0"）：
+    文字超出列宽时按比例缩小字号，使其保持单行显示。
+    """
+    text = str(text) if text is not None else ""
+    avail = col_width - 2 * CELL_PADDING - 1
+    width = stringWidth(text, style.fontName, style.fontSize)
+    if not text or width <= avail:
+        return Paragraph(text, style)
+    size = max(MIN_FIT_FONT_SIZE, style.fontSize * avail / width)
+    shrunk = ParagraphStyle(f"{style.name}_fit", parent=style, fontSize=size, leading=size + 2)
+    return Paragraph(text, shrunk)
 
 
 # ---------------- 每页重复的页眉/页脚（通过自定义 Canvas 绘制） ----------------
@@ -234,7 +254,7 @@ def _left_column(doc: dict, styles, width: float):
     if incoterm_line and doc.get("destination"):
         incoterm_line = f"{incoterm_line}  {doc.get('destination')}"
     conditions_text = (
-        f"<b>Terms of Payment</b>&nbsp;&nbsp;{conditions.get('terms_of_payment', '')}<br/><br/>"
+        f"<b>Terms of Payment</b>&nbsp;&nbsp;{calc.effective_terms_of_payment(doc)}<br/><br/>"
         f"<b>Incoterms</b>&nbsp;&nbsp;{incoterm_line}<br/><br/>"
         f"<b>Shipment by</b>&nbsp;&nbsp;{conditions.get('shipment_by', '')}"
     )
@@ -278,7 +298,18 @@ PL_HEADERS = ["No.", "Model", "Description", "Qty", "Unit", "COO", "Net Weight",
 
 def _item_table(computed_lines: list, currency: str, styles, financial: bool, content_width: float):
     headers = FINANCIAL_HEADERS if financial else PL_HEADERS
+    if financial:
+        weights = [5, 13, 20, 7, 6, 12, 13, 6, 8, 9, 11, 9]
+    else:
+        weights = [6, 15, 24, 8, 8, 8, 10, 10, 12, 12]
+    total_weight = sum(weights)
+    col_widths = [content_width * w / total_weight for w in weights]
+    width_of = dict(zip(headers, col_widths))
+
     data = [[_wrap(h, styles["cell_center"]) for h in headers]]
+
+    def num(header, text):
+        return _fit_one_line(text, styles["cell_right"], width_of[header])
 
     for i, line in enumerate(computed_lines, start=1):
         desc = line.get("name_en", "")
@@ -287,31 +318,31 @@ def _item_table(computed_lines: list, currency: str, styles, financial: bool, co
         else:
             desc += "<br/>&nbsp;"
 
+        model_no = line.get("model_no", "")
+        # 无空格的型号（如 6010500003）视为一个整体，缩小字号而不是从中间断开
+        if model_no and " " not in model_no.strip():
+            model_cell = _fit_one_line(model_no, styles["cell"], width_of["Model"])
+        else:
+            model_cell = Paragraph(model_no or "&nbsp;", styles["cell"])
+
         row = [
             _wrap(i, styles["cell_center"]),
-            Paragraph(line.get("model_no", "") or "&nbsp;", styles["cell"]),
+            model_cell,
             Paragraph(desc, styles["cell"]),
-            _wrap(f"{line.get('quantity', 0):g}", styles["cell_right"]),
+            num("Qty", calc.fmt_qty(line.get("quantity", 0))),
             _wrap(line.get("unit", ""), styles["cell_center"]),
         ]
         if financial:
-            row.append(_wrap(f"{line.get('unit_price', 0):,.2f}", styles["cell_right"]))
-            row.append(_wrap(f"{line.get('subtotal', 0):,.2f}", styles["cell_right"]))
+            row.append(num("Unit Price", f"{line.get('unit_price', 0):,.2f}"))
+            row.append(num("Total Price", f"{line.get('subtotal', 0):,.2f}"))
         row.extend([
             _wrap(line.get("coo", ""), styles["cell_center"]),
-            _wrap(f"{line.get('net_weight', 0):.2f}", styles["cell_right"]),
-            _wrap(f"{line['total_net_weight']:.2f}", styles["cell_right"]),
+            num("Net Weight", calc.fmt_weight(line.get("net_weight", 0))),
+            num("Total N.W.", calc.fmt_weight(line["total_net_weight"])),
             _wrap(line.get("hs_code", ""), styles["cell_center"]),
             _wrap(line.get("remark", ""), styles["cell"]),
         ])
         data.append(row)
-
-    if financial:
-        weights = [6, 13, 20, 7, 7, 11, 11, 8, 9, 9, 11, 11]
-    else:
-        weights = [6, 15, 24, 8, 8, 8, 10, 10, 12, 12]
-    total_weight = sum(weights)
-    col_widths = [content_width * w / total_weight for w in weights]
 
     table = Table(data, colWidths=col_widths, repeatRows=1)
     table.setStyle(TableStyle([
@@ -319,9 +350,32 @@ def _item_table(computed_lines: list, currency: str, styles, financial: bool, co
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), CELL_PADDING),
+        ("RIGHTPADDING", (0, 0), (-1, -1), CELL_PADDING),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EEF4FB")]),
+    ]))
+    return table
+
+
+def _payment_schedule_table(total_amount: float, deposit_pct, currency: str, styles, content_width: float):
+    """付款拆分明细（如 50% 定金 / 50% 尾款各自的金额），显示在总金额下方。"""
+    schedule = calc.payment_schedule(total_amount, deposit_pct)
+    if not schedule:
+        return None
+    rows = [[Paragraph(f"<b>{label}</b>", styles["normal"]),
+             Paragraph(f"<b>{currency} {amount:,.2f}</b>", styles["normal_right"])]
+            for label, amount in schedule]
+    amount_w = 50 * mm
+    table = Table(rows, colWidths=[content_width - amount_w, amount_w])
+    table.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#5B9BD5")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#5B9BD5")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F4F8FC")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     return table
 
@@ -397,9 +451,16 @@ def export_document(doc: dict, filepath: str) -> str:
         elements.append(Spacer(1, 3))
         elements.append(Paragraph(calc.amount_in_words(totals["total_amount"], currency), styles["bold_small"]))
         elements.append(Spacer(1, 6))
+        schedule = _payment_schedule_table(totals["total_amount"], doc.get("deposit_pct"), currency,
+                                           styles, content_width)
+        if schedule:
+            elements.append(schedule)
+            elements.append(Spacer(1, 6))
 
-    summary_parts = [f"Total Qty: {totals['total_quantity']:g}", f"Total N.W.: {totals['total_net_weight']:.2f} kg"]
-    elements.append(Paragraph("    ".join(summary_parts), styles["normal"]))
+    summary_parts = [f"Total Qty: {calc.fmt_qty(totals['total_quantity'])}"]
+    if totals["total_net_weight"]:
+        summary_parts.append(f"Total N.W.: {totals['total_net_weight']:.2f} kg")
+    elements.append(Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;".join(summary_parts), styles["normal"]))
     elements.append(Spacer(1, 8))
 
     if doc.get("remark"):

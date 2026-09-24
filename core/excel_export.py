@@ -108,7 +108,7 @@ def export_document(doc: dict, filepath: str) -> str:
     _set(ws, r, 1, "Conditions", font=BOLD, fill=BOX_FILL)
     r += 1
     for label, value in (
-        ("Terms of Payment", conditions.get("terms_of_payment", "")),
+        ("Terms of Payment", calc.effective_terms_of_payment(doc)),
         ("Incoterms", incoterm_line),
         ("Shipment by", conditions.get("shipment_by", "")),
     ):
@@ -169,8 +169,9 @@ def export_document(doc: dict, filepath: str) -> str:
             _set(ws, row, c, round(line.get("unit_price", 0), 2)); c += 1
             _set(ws, row, c, round(line.get("subtotal", 0), 2)); c += 1
         _set(ws, row, c, line.get("coo", "")); c += 1
-        _set(ws, row, c, round(line.get("net_weight", 0), 2)); c += 1
-        _set(ws, row, c, round(line.get("total_net_weight", 0), 2)); c += 1
+        # 没有重量信息时留空，而不是显示 0
+        _set(ws, row, c, round(line.get("net_weight", 0), 2) or None); c += 1
+        _set(ws, row, c, round(line.get("total_net_weight", 0), 2) or None); c += 1
         _set(ws, row, c, line.get("hs_code", "")); c += 1
         _set(ws, row, c, line.get("remark", "")); c += 1
         row += 1
@@ -181,8 +182,14 @@ def export_document(doc: dict, filepath: str) -> str:
         row += 1
         _set(ws, row, 1, calc.amount_in_words(totals["total_amount"], currency))
         row += 1
+        for label, amount in calc.payment_schedule(totals["total_amount"], doc.get("deposit_pct")):
+            _set(ws, row, 1, f"{label}:  {currency} {amount:,.2f}", font=BOLD)
+            row += 1
 
-    _set(ws, row, 1, f"Total Qty: {totals['total_quantity']:g}    Total N.W.: {totals['total_net_weight']:.2f} kg")
+    summary = f"Total Qty: {calc.fmt_qty(totals['total_quantity'])}"
+    if totals["total_net_weight"]:
+        summary += f"    Total N.W.: {totals['total_net_weight']:.2f} kg"
+    _set(ws, row, 1, summary)
     row += 2
 
     if doc.get("remark"):

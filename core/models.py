@@ -117,7 +117,7 @@ def make_document(
     doc_type="PI", doc_number="", customer: dict = None, currency="USD",
     destination="",
     own_snapshot=None, delivery_snapshot=None, conditions_snapshot=None, banking_snapshot=None,
-    lines=None, remark="", date="", validity_start="", validity_end="",
+    lines=None, remark="", date="", validity_start="", validity_end="", deposit_pct=None,
 ) -> dict:
     """
     单据主记录：一次只生成一份文档（PI / CI / PL 之一，标题不同，其余格式统一）。
@@ -142,4 +142,6 @@ def make_document(
         "validity_end": validity_end,
         "lines": lines or [],
         "remark": remark,
+        # 付款拆分：None=不拆分，100=100%预付，50=50%定金+50%尾款（见 calc.payment_schedule）
+        "deposit_pct": deposit_pct,
     }

@@ -64,7 +64,7 @@ def extract_pdf_pages(path: str) -> list:
     doc = fitz.open(path)
     try:
         for page in doc:
-            text = page.get_text().strip()
+            text = _page_text_with_tables(page)
             if text:
                 results.append(("text", text))
             else:
@@ -74,6 +74,25 @@ def extract_pdf_pages(path: str) -> list:
     finally:
         doc.close()
     return results
+
+
+def _page_text_with_tables(page) -> str:
+    """
+    按阅读顺序提取页面文字，并把识别到的表格额外转为 Markdown 附在后面。
+    普通 get_text() 会把表格逐单元格拆成独立行，数量/单价/金额列的对应关系丢失，
+    这是 AI 把数量与单价填错的主要原因；Markdown 表格保留了行列结构。
+    """
+    text = page.get_text(sort=True).strip()
+    if not text:
+        return ""
+    try:
+        tables = [t.to_markdown().strip() for t in page.find_tables().tables]
+    except Exception:
+        tables = []
+    tables = [t for t in tables if t]
+    if tables:
+        text += "\n\n【页面中的表格（行列结构）】\n\n" + "\n\n".join(tables)
+    return text
 
 
 # ---------------- Excel 内容提取 ----------------
@@ -280,10 +299,10 @@ def _run_extraction(path: str, prompt: str, config: dict) -> str:
         if all(p[0] == "text" for p in pages):
             combined_text = "\n\n".join(p[1] for p in pages)
             return ai_client.extract_from_text(api_key, base_url, text_model, prompt, combined_text)
-        # 存在扫描页，使用视觉模型处理第一张图片页（多页扫描件建议用户拆分导入）
-        image_page = next((p for p in pages if p[0] == "image"), None)
-        if image_page:
-            return ai_client.extract_from_image(api_key, base_url, vision_model, prompt, image_page[1], "image/png")
+        # 存在扫描页：把所有扫描页一次性交给视觉模型（此前只识别第一页，多页 PO 会漏行）
+        image_pages = [p[1] for p in pages if p[0] == "image"]
+        if image_pages:
+            return ai_client.extract_from_images(api_key, base_url, vision_model, prompt, image_pages, "image/png")
         combined_text = "\n\n".join(p[1] for p in pages if p[0] == "text")
         return ai_client.extract_from_text(api_key, base_url, text_model, prompt, combined_text)
 

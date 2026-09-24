@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox,
-    QDoubleSpinBox, QDialog, QDialogButtonBox, QMessageBox, QGroupBox,
+    QDoubleSpinBox, QSpinBox, QDialog, QDialogButtonBox, QMessageBox, QGroupBox,
     QDateEdit, QAbstractItemView, QListWidget, QListWidgetItem, QScrollArea,
 )
 
@@ -23,6 +23,7 @@ from ui.ai_import_helper import (
 )
 
 CURRENCIES = ["USD", "EUR", "RMB", "SGD"]
+CUSTOM_DEPOSIT = "custom"
 DOC_TITLES = {"PI": "PROFORMA INVOICE 形式发票", "CI": "COMMERCIAL INVOICE 商业发票", "PL": "PACKING LIST 装箱单"}
 
 # 财务类单据（PI/CI）显示单价与金额；PL 不显示价格信息
@@ -169,6 +170,24 @@ class DocumentTab(QWidget):
         self.currency.currentTextChanged.connect(self._recalculate)
         form.addRow("币种：", self.currency)
 
+        # 付款条件：选择拆分方式后，导出单据末页会在总金额下方列出每次应付金额
+        payment_row = QHBoxLayout()
+        self.payment_combo = QComboBox()
+        for label, pct in calc.PAYMENT_PRESETS:
+            self.payment_combo.addItem(label, pct)
+        self.payment_combo.addItem("自定义定金比例", CUSTOM_DEPOSIT)
+        self.deposit_spin = QSpinBox()
+        self.deposit_spin.setRange(1, 99)
+        self.deposit_spin.setValue(40)
+        self.deposit_spin.setSuffix(" % 定金")
+        self.deposit_spin.setVisible(False)
+        self.payment_combo.currentIndexChanged.connect(self._on_payment_changed)
+        self.deposit_spin.valueChanged.connect(lambda _: self._recalculate(rebuild_table=False))
+        payment_row.addWidget(self.payment_combo)
+        payment_row.addWidget(self.deposit_spin)
+        payment_row.addStretch()
+        form.addRow("付款条件：", payment_row)
+
         line = QLabel()
         line.setFixedHeight(1)
         line.setStyleSheet("background-color: #E5E9ED;")
@@ -245,7 +264,7 @@ class DocumentTab(QWidget):
         action_row.addWidget(self.export_format)
         action_row.addWidget(export_btn)
         action_row.addStretch()
-        layout.addLayout(action_row)
+        outer.addLayout(action_row)
 
     # ---------------- data population ----------------
     def _refresh_customer_combo(self):
@@ -286,6 +305,26 @@ class DocumentTab(QWidget):
 
     def _on_doc_type_changed(self):
         self._rebuild_table(calc.compute_totals(self.document["lines"])["lines"])
+
+    def _on_payment_changed(self):
+        self.deposit_spin.setVisible(self.payment_combo.currentData() == CUSTOM_DEPOSIT)
+        self._recalculate(rebuild_table=False)
+
+    def _deposit_pct(self):
+        data = self.payment_combo.currentData()
+        if data == CUSTOM_DEPOSIT:
+            return self.deposit_spin.value()
+        return data
+
+    def _set_deposit_pct(self, pct):
+        self.payment_combo.blockSignals(True)
+        idx = self.payment_combo.findData(pct) if pct is not None else 0
+        if idx < 0:
+            idx = self.payment_combo.findData(CUSTOM_DEPOSIT)
+            self.deposit_spin.setValue(int(pct))
+        self.payment_combo.setCurrentIndex(idx)
+        self.payment_combo.blockSignals(False)
+        self.deposit_spin.setVisible(self.payment_combo.currentData() == CUSTOM_DEPOSIT)
 
     def _generate_number(self):
         self.doc_number.setText(storage.generate_invoice_number())
@@ -380,7 +419,10 @@ class DocumentTab(QWidget):
             summary += f"总金额：{currency} {totals['total_amount']:,.2f}    "
         self.totals_label.setText(summary)
         if self._is_financial():
-            self.words_label.setText(calc.amount_in_words(totals["total_amount"], currency))
+            words = calc.amount_in_words(totals["total_amount"], currency)
+            for label, amount in calc.payment_schedule(totals["total_amount"], self._deposit_pct()):
+                words += f"\n{label}:  {currency} {amount:,.2f}"
+            self.words_label.setText(words)
         else:
             self.words_label.setText("")
 
@@ -420,7 +462,7 @@ class DocumentTab(QWidget):
             line["name_cn"] = parts[1] if len(parts) > 1 else ""
         elif field == "_nw":
             try:
-                line["net_weight"] = float(text)
+                line["net_weight"] = float(text) if text.strip() else 0.0
             except ValueError:
                 pass
         elif field:
@@ -469,8 +511,8 @@ class DocumentTab(QWidget):
                 self.table.setItem(row, col, QTableWidgetItem(f"{line['subtotal']:.2f}")); col += 1
 
             self.table.setItem(row, col, QTableWidgetItem(line.get("coo", ""))); col += 1
-            self.table.setItem(row, col, QTableWidgetItem(f"{line.get('net_weight', 0):.2f}")); col += 1
-            self.table.setItem(row, col, QTableWidgetItem(f"{line['total_net_weight']:.2f}")); col += 1
+            self.table.setItem(row, col, QTableWidgetItem(calc.fmt_weight(line.get("net_weight", 0)))); col += 1
+            self.table.setItem(row, col, QTableWidgetItem(calc.fmt_weight(line["total_net_weight"]))); col += 1
             self.table.setItem(row, col, QTableWidgetItem(line.get("hs_code", ""))); col += 1
             self.table.setItem(row, col, QTableWidgetItem(line.get("remark", ""))); col += 1
 
@@ -485,8 +527,8 @@ class DocumentTab(QWidget):
         for row, line in enumerate(computed_lines):
             nw_col = 8 if financial else 6
             tnw_col = nw_col + 1
-            self.table.setItem(row, nw_col, QTableWidgetItem(f"{line.get('net_weight', 0):.2f}"))
-            self.table.setItem(row, tnw_col, QTableWidgetItem(f"{line['total_net_weight']:.2f}"))
+            self.table.setItem(row, nw_col, QTableWidgetItem(calc.fmt_weight(line.get("net_weight", 0))))
+            self.table.setItem(row, tnw_col, QTableWidgetItem(calc.fmt_weight(line["total_net_weight"])))
             if financial:
                 self.table.setItem(row, 6, QTableWidgetItem(f"{line['subtotal']:.2f}"))
 
@@ -509,6 +551,7 @@ class DocumentTab(QWidget):
             "validity_start": self.validity_start.date().toString("yyyy-MM-dd"),
             "validity_end": self.validity_end.date().toString("yyyy-MM-dd"),
             "remark": self.remark.text().strip(),
+            "deposit_pct": self._deposit_pct(),
         })
         return self.document
 
@@ -521,6 +564,7 @@ class DocumentTab(QWidget):
         self._set_default_dates()
         self.destination.clear(); self.remark.clear()
         self.customer_combo.setCurrentIndex(0)
+        self._set_deposit_pct(None)
         self._recalculate()
 
     def _save_document(self):
@@ -581,4 +625,5 @@ class DocumentTab(QWidget):
         self.destination.setText(doc.get("destination", ""))
         self.currency.setCurrentText(doc.get("currency", "USD"))
         self.remark.setText(doc.get("remark", ""))
+        self._set_deposit_pct(doc.get("deposit_pct"))
         self._recalculate()
