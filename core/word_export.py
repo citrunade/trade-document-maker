@@ -20,7 +20,7 @@ DOC_TITLES = {
 
 CJK_FONT = "Microsoft YaHei"
 HEADER_BLUE = RGBColor(0x5B, 0x9B, 0xD5)
-NUMERIC_HEADERS = {"Qty", "Unit Price", "Total Price", "Net Weight", "Total N.W."}
+NUMERIC_HEADERS = {"Qty", "Unit Price", "Total Price", "Net Weight", "Total N.W.", "Gross Weight", "Total G.W."}
 
 
 def _set_cjk(run, font_name=CJK_FONT, size=None, bold=None, color=None):
@@ -189,7 +189,8 @@ def export_document(doc: dict, filepath: str) -> str:
         headers = ["No.", "Model", "Description", "Qty", "Unit", "Unit Price", "Total Price",
                    "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
     else:
-        headers = ["No.", "Model", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
+        headers = ["No.", "Model", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.",
+                   "Gross Weight", "Total G.W.", "HS Code", "Remark"]
 
     table = document.add_table(rows=1, cols=len(headers))
     table.style = "Table Grid"
@@ -205,9 +206,12 @@ def export_document(doc: dict, filepath: str) -> str:
             desc += f"\n{line.get('name_cn')}"
         values = [str(i), line.get("model_no", ""), desc, calc.fmt_qty(line.get("quantity", 0)), line.get("unit", "")]
         if financial:
-            values += [f"{line.get('unit_price', 0):,.2f}", f"{line.get('subtotal', 0):,.2f}"]
+            values += [calc.fmt_unit_price(line.get("unit_price", 0)), f"{line.get('subtotal', 0):,.2f}"]
         values += [line.get("coo", ""), calc.fmt_weight(line.get("net_weight", 0)),
-                   calc.fmt_weight(line["total_net_weight"]), line.get("hs_code", ""), line.get("remark", "")]
+                   calc.fmt_weight(line["total_net_weight"])]
+        if not financial:
+            values += [calc.fmt_weight(line.get("gross_weight", 0)), calc.fmt_weight(line["total_gross_weight"])]
+        values += [line.get("hs_code", ""), line.get("remark", "")]
         for c, val in enumerate(values):
             p = _cell_text(row_cells[c], val, size=8)
             if headers[c] in NUMERIC_HEADERS:
@@ -222,10 +226,7 @@ def export_document(doc: dict, filepath: str) -> str:
         for label, amount in calc.payment_schedule(totals["total_amount"], doc.get("deposit_pct")):
             _para(document, f"{label}:  {currency} {amount:,.2f}", size=9, bold=True)
 
-    summary = f"Total Qty: {calc.fmt_qty(totals['total_quantity'])}"
-    if totals["total_net_weight"]:
-        summary += f"    Total N.W.: {totals['total_net_weight']:.2f} kg"
-    _para(document, summary, size=9)
+    _para(document, "    ".join(calc.summary_parts(totals)), size=9)
     document.add_paragraph()
 
     if doc.get("remark"):

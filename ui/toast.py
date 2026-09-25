@@ -14,3 +14,23 @@ def notify(widget, message: str, timeout: int = 3500) -> None:
         status_bar_getter().showMessage(message, timeout)
     except Exception:
         pass
+
+
+def show_export_done(parent, path: str, extra: str = "") -> None:
+    """导出完成后提供「打开文件」「打开所在文件夹」按钮，免去手动查找导出目录。"""
+    import os
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtGui import QDesktopServices
+    from PyQt6.QtWidgets import QMessageBox
+
+    box = QMessageBox(parent)
+    box.setWindowTitle("导出完成")
+    box.setText(f"已导出：{os.path.basename(path)}{extra}\n\n{path}")
+    open_file = box.addButton("打开文件", QMessageBox.ButtonRole.AcceptRole)
+    open_dir = box.addButton("打开所在文件夹", QMessageBox.ButtonRole.ActionRole)
+    box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+    box.exec()
+    if box.clickedButton() is open_file:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    elif box.clickedButton() is open_dir:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))

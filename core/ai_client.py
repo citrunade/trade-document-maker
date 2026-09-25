@@ -63,7 +63,9 @@ def _post_chat_completion(
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0.1,
+        # 同一文件多次导入应得到相同结果（此前 PI 与 CI/PL 分别导入同一订单，合计件数不一致）
+        "temperature": 0,
+        "seed": 1234,
         # 字段提取不需要深度思考；关闭可避免混合思考模型更慢、更贵，且 JSON Mode 不支持思考模式
         "enable_thinking": False,
     }
@@ -165,8 +167,12 @@ def extract_from_images(
     prompt: str,
     images: list,
     mime_type: str = "image/png",
+    extra_text: str = "",
 ) -> str:
-    """多张图片（如多页扫描件）放在同一次请求中，由模型合并提取为一份 JSON。"""
+    """
+    多张图片（如多页扫描件）放在同一次请求中，由模型合并提取为一份 JSON。
+    extra_text 为同一文件中有文字层页面的内容（混合 PDF），与图片一起提供。
+    """
     content = [
         {
             "type": "image_url",
@@ -179,6 +185,8 @@ def extract_from_images(
     hint = "请识别并提取这份文件中的字段，只返回有效 JSON。"
     if len(images) > 1:
         hint = f"以下 {len(images)} 张图片是同一份文件的连续页面，请合并提取全部字段，只返回有效 JSON。"
+    if extra_text.strip():
+        hint += "\n\n同一文件中其余页面的文字内容如下，请与图片内容合并提取：\n\n" + extra_text
     content.append({"type": "text", "text": hint})
     messages = [
         {"role": "system", "content": prompt},

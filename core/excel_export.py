@@ -22,6 +22,12 @@ BOX_BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 BOLD = Font(bold=True)
 WHITE_BOLD = Font(bold=True, color="FFFFFF")
 
+# 数字单元格格式：保留数值类型（便于客户在 Excel 中继续计算），同时显示千分位
+MONEY_FORMAT = "#,##0.00"
+PRICE_FORMAT = "#,##0.00##"
+QTY_FORMAT = "#,##0.###"
+WEIGHT_FORMAT = "#,##0.00#"
+
 
 def _set(ws, row, col, value, font=None, fill=None, wrap=False, align=None):
     cell = ws.cell(row=row, column=col, value=value)
@@ -151,7 +157,7 @@ def export_document(doc: dict, filepath: str) -> str:
                    "Total Price", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
     else:
         headers = ["No.", "Model", "Description EN", "Description CN", "Qty", "Unit",
-                   "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
+                   "COO", "Net Weight", "Total N.W.", "Gross Weight", "Total G.W.", "HS Code", "Remark"]
     for c, h in enumerate(headers, start=1):
         _set(ws, row, c, h, font=WHITE_BOLD, fill=HEADER_FILL, align="center")
     header_row = row
@@ -163,15 +169,19 @@ def export_document(doc: dict, filepath: str) -> str:
         _set(ws, row, c, line.get("model_no", "")); c += 1
         _set(ws, row, c, line.get("name_en", "")); c += 1
         _set(ws, row, c, line.get("name_cn", "")); c += 1
-        _set(ws, row, c, line.get("quantity", 0)); c += 1
+        qty = line.get("quantity", 0)
+        _set(ws, row, c, qty).number_format = "#,##0" if float(qty).is_integer() else QTY_FORMAT; c += 1
         _set(ws, row, c, line.get("unit", "")); c += 1
         if financial:
-            _set(ws, row, c, round(line.get("unit_price", 0), 2)); c += 1
-            _set(ws, row, c, round(line.get("subtotal", 0), 2)); c += 1
+            _set(ws, row, c, round(line.get("unit_price", 0), calc.PRICE_DECIMALS)).number_format = PRICE_FORMAT; c += 1
+            _set(ws, row, c, round(line.get("subtotal", 0), 2)).number_format = MONEY_FORMAT; c += 1
         _set(ws, row, c, line.get("coo", "")); c += 1
         # 没有重量信息时留空，而不是显示 0
-        _set(ws, row, c, round(line.get("net_weight", 0), 2) or None); c += 1
-        _set(ws, row, c, round(line.get("total_net_weight", 0), 2) or None); c += 1
+        weight_keys = ["net_weight", "total_net_weight"]
+        if not financial:
+            weight_keys += ["gross_weight", "total_gross_weight"]
+        for key in weight_keys:
+            _set(ws, row, c, round(line.get(key, 0), 3) or None).number_format = WEIGHT_FORMAT; c += 1
         _set(ws, row, c, line.get("hs_code", "")); c += 1
         _set(ws, row, c, line.get("remark", "")); c += 1
         row += 1
@@ -186,10 +196,7 @@ def export_document(doc: dict, filepath: str) -> str:
             _set(ws, row, 1, f"{label}:  {currency} {amount:,.2f}", font=BOLD)
             row += 1
 
-    summary = f"Total Qty: {calc.fmt_qty(totals['total_quantity'])}"
-    if totals["total_net_weight"]:
-        summary += f"    Total N.W.: {totals['total_net_weight']:.2f} kg"
-    _set(ws, row, 1, summary)
+    _set(ws, row, 1, "    ".join(calc.summary_parts(totals)))
     row += 2
 
     if doc.get("remark"):

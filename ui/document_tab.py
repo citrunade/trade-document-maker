@@ -4,6 +4,9 @@
 一次只生成一份单据（标题按类型不同，格式统一），不再同时生成三份。
 支持导出为 PDF / Word / Excel 三种格式（core.document_export 统一分发）。
 """
+import copy
+import os
+
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
@@ -13,10 +16,10 @@ from PyQt6.QtWidgets import (
 )
 
 from core import storage, calc
-from core.document_export import export_document_in_format
+from core.document_export import export_document_in_format, FORMAT_EXTENSIONS
 from core.models import make_document, make_doc_line
 from core.paths import get_exports_dir
-from ui.toast import notify
+from ui.toast import notify, show_export_done
 from ui.style import disable_accidental_scroll_edits
 from ui.ai_import_helper import (
     show_privacy_notice_once, pick_import_file, run_ai_extraction, ImportReviewDialog,
@@ -26,15 +29,39 @@ CURRENCIES = ["USD", "EUR", "RMB", "SGD"]
 CUSTOM_DEPOSIT = "custom"
 DOC_TITLES = {"PI": "PROFORMA INVOICE 形式发票", "CI": "COMMERCIAL INVOICE 商业发票", "PL": "PACKING LIST 装箱单"}
 
-# 财务类单据（PI/CI）显示单价与金额；PL 不显示价格信息
+# 明细表列定义（key, 表头）。财务类单据（PI/CI）显示单价与金额；
+# 装箱单（PL）不显示价格，改为显示毛重，便于报关/订舱。
 FINANCIAL_LINE_COLUMNS = [
-    "No.", "Model", "Description", "Qty", "Unit", "Unit Price", "Total Price",
-    "COO", "Net Weight", "Total N.W.", "HS Code", "Remark", "操作",
+    ("no", "No."), ("model_no", "Model"), ("desc", "Description"), ("quantity", "Qty"), ("unit", "Unit"),
+    ("unit_price", "Unit Price"), ("subtotal", "Total Price"), ("coo", "COO"),
+    ("net_weight", "Net Weight"), ("total_net_weight", "Total N.W."),
+    ("hs_code", "HS Code"), ("remark", "Remark"), ("op", "操作"),
 ]
 PL_LINE_COLUMNS = [
-    "No.", "Model", "Description", "Qty", "Unit",
-    "COO", "Net Weight", "Total N.W.", "HS Code", "Remark", "操作",
+    ("no", "No."), ("model_no", "Model"), ("desc", "Description"), ("quantity", "Qty"), ("unit", "Unit"),
+    ("coo", "COO"), ("net_weight", "Net Weight"), ("total_net_weight", "Total N.W."),
+    ("gross_weight", "Gross Weight"), ("total_gross_weight", "Total G.W."),
+    ("hs_code", "HS Code"), ("remark", "Remark"), ("op", "操作"),
 ]
+WEIGHT_KEYS = {"net_weight", "gross_weight"}
+TEXT_KEYS = {"model_no", "unit", "coo", "hs_code", "remark"}
+COMPUTED_KEYS = {"no", "subtotal", "total_net_weight", "total_gross_weight"}
+
+
+class _TrimmedSpinBox(QDoubleSpinBox):
+    """数字框不显示多余的 0：4.000 显示为 4，167.4000 显示为 167.40（单价至少保留 2 位小数）。"""
+
+    def __init__(self, min_decimals: int = 0):
+        super().__init__()
+        self._min_decimals = min_decimals
+
+    def textFromValue(self, value: float) -> str:
+        text = f"{value:.{self.decimals()}f}"
+        if "." in text:
+            whole, frac = text.split(".")
+            frac = frac.rstrip("0").ljust(self._min_decimals, "0")
+            text = f"{whole}.{frac}" if frac else whole
+        return text
 
 
 def _safe_float(value) -> float:
@@ -224,11 +251,26 @@ class DocumentTab(QWidget):
         btn_row.addWidget(add_btn)
         btn_row.addWidget(ai_btn)
         btn_row.addStretch()
+        up_btn = QPushButton("上移")
+        up_btn.clicked.connect(lambda: self._move_selected_lines(-1))
+        down_btn = QPushButton("下移")
+        down_btn.clicked.connect(lambda: self._move_selected_lines(1))
+        del_sel_btn = QPushButton("删除所选")
+        del_sel_btn.clicked.connect(self._remove_selected_lines)
+        for b in (up_btn, down_btn, del_sel_btn):
+            btn_row.addWidget(b)
         lines_layout.addLayout(btn_row)
 
         self.table = QTableWidget(0, len(FINANCIAL_LINE_COLUMNS))
-        self.table.setHorizontalHeaderLabels(FINANCIAL_LINE_COLUMNS)
+        self.table.setHorizontalHeaderLabels([label for _, label in FINANCIAL_LINE_COLUMNS])
         self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)  # 行号已在 No. 列中显示
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.AnyKeyPressed
+        )
         self.table.cellChanged.connect(self._on_cell_changed)
         # 保证产品明细表始终至少能看到约 6 行，避免被上方较长的表单挤到只剩一行
         self.table.setMinimumHeight(240)
@@ -277,23 +319,52 @@ class DocumentTab(QWidget):
             self.customer_combo.addItem(label, c)
         self.customer_combo.blockSignals(False)
 
-    def _refresh_template_combos(self):
-        templates = storage.load_templates()
-        for category, combo in (
+    def _template_combos(self):
+        return (
             ("own", self.own_combo), ("delivery", self.delivery_combo),
             ("conditions", self.conditions_combo), ("banking", self.banking_combo),
-        ):
+        )
+
+    def _refresh_template_combos(self):
+        templates = storage.load_templates()
+        extras = getattr(self, "_snapshot_templates", {})
+        for category, combo in self._template_combos():
             current_id = combo.currentData().get("id") if combo.currentData() else None
             combo.blockSignals(True)
             combo.clear()
             combo.addItem("-- 无 --", None)
             restore_idx = 0
-            for i, t in enumerate(templates.get(category, []), start=1):
+            options = list(templates.get(category, []))
+            if category in extras:
+                options.append(extras[category])
+            for i, t in enumerate(options, start=1):
                 combo.addItem(t.get("name") or "(未命名预设)", t)
                 if current_id and t.get("id") == current_id:
                     restore_idx = i
             combo.setCurrentIndex(restore_idx)
             combo.blockSignals(False)
+
+    def _select_templates_for(self, doc: dict):
+        """
+        按单据中保存的模板快照选回对应预设：内容完全一致的预设优先；
+        若原预设已被修改或删除，则增加一项「原单据内容」保留旧快照，避免悄悄换成别的银行/地址。
+        """
+        self._snapshot_templates = {}
+        templates = storage.load_templates()
+        for category, _combo in self._template_combos():
+            snapshot = doc.get(f"{category}_snapshot") or {}
+            if snapshot and not any(t.get("fields", {}) == snapshot for t in templates.get(category, [])):
+                self._snapshot_templates[category] = {
+                    "id": f"__snapshot_{category}", "name": "(原单据内容)", "fields": dict(snapshot),
+                }
+        self._refresh_template_combos()
+        for category, combo in self._template_combos():
+            snapshot = doc.get(f"{category}_snapshot") or {}
+            idx = 0
+            if snapshot:
+                idx = next((i for i in range(1, combo.count())
+                            if combo.itemData(i).get("fields", {}) == snapshot), 0)
+            combo.setCurrentIndex(idx)
 
     def _on_customer_changed(self):
         customer = self.customer_combo.currentData()
@@ -340,13 +411,37 @@ class DocumentTab(QWidget):
     def _add_line(self):
         dialog = ProductPickerDialog(self)
         if dialog.exec() and dialog.selected_product:
-            line = make_doc_line(dialog.selected_product, quantity=1)
+            product = dialog.selected_product
+            product_currency = (product.get("currency") or "").upper()
+            doc_currency = self.currency.currentText().upper()
+            if product_currency and product_currency != doc_currency and product.get("unit_price"):
+                QMessageBox.warning(
+                    self, "币种不一致",
+                    f"该产品在物料库中的单价为 {product_currency} {product.get('unit_price', 0):,.2f}，"
+                    f"而当前单据币种为 {doc_currency}。\n软件不会自动换算汇率，请在明细表中核对并修改单价。",
+                )
+            line = make_doc_line(product, quantity=1)
             self.document["lines"].append(line)
             self._recalculate()
 
     def _ai_import_lines(self):
         if not show_privacy_notice_once(self):
             return
+        replace_existing = False
+        if self.document["lines"]:
+            box = QMessageBox(self)
+            box.setWindowTitle("已有产品明细")
+            box.setText(
+                f"当前单据已有 {len(self.document['lines'])} 条产品明细。\n"
+                "导入的明细要替换现有明细，还是追加在后面？"
+            )
+            replace_btn = box.addButton("替换现有明细", QMessageBox.ButtonRole.DestructiveRole)
+            append_btn = box.addButton("追加", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() not in (replace_btn, append_btn):
+                return
+            replace_existing = box.clickedButton() is replace_btn
         path = pick_import_file(self)
         if not path:
             return
@@ -358,26 +453,40 @@ class DocumentTab(QWidget):
             QMessageBox.information(self, "提示", "未能从该文件中识别出任何产品明细")
             return
 
+        from core.ai_import import fill_from_product_library
+        matched = fill_from_product_library(extracted, storage.load_products())
+
         review_columns = [
             ("model_no", "型号"), ("name_cn", "中文品名"), ("name_en", "英文品名"),
             ("hs_code", "HS编码"), ("unit", "单位"), ("quantity", "数量"), ("unit_price", "单价"),
+            ("net_weight", "单件净重kg"), ("gross_weight", "单件毛重kg"), ("coo", "原产国"),
             ("remark", "备注"),
         ]
+        warnings = getattr(extracted, "warnings", [])
+        if warnings:
+            QMessageBox.warning(
+                self, "请核对识别结果",
+                "\n".join(warnings) + "\n\n可能有明细行识别错误或遗漏，请在接下来的审核表中逐行核对。",
+            )
         dialog = ImportReviewDialog(self, "审核 AI 识别的产品明细", review_columns, extracted)
         if not dialog.exec():
             return
         confirmed = dialog.get_confirmed_rows()
+        if replace_existing:
+            self.document["lines"] = []
         for row in confirmed:
             row["quantity"] = _safe_float(row.get("quantity"))
             row["unit_price"] = _safe_float(row.get("unit_price"))
+            row["net_weight"] = _safe_float(row.get("net_weight"))
+            row["gross_weight"] = _safe_float(row.get("gross_weight"))
             row.setdefault("coo", "")
             row.setdefault("remark", "")
             self.document["lines"].append(row)
         self._recalculate()
         QMessageBox.information(
             self, "提示",
-            f"已导入 {len(confirmed)} 条产品明细，重量/COO 等信息未包含在采购订单中，"
-            "如需精确计算，请在物料库中维护对应产品或在明细表中手动补充。",
+            f"已导入 {len(confirmed)} 条产品明细，其中 {matched} 条按型号从物料库补全了"
+            "文件中缺少的重量/HS编码/原产国等信息。\n其余缺少的信息可在明细表中手动补充。",
         )
 
     def _remove_line(self, index: int):
@@ -385,13 +494,48 @@ class DocumentTab(QWidget):
             del self.document["lines"][index]
             self._recalculate()
 
+    def _selected_rows(self) -> list:
+        return sorted({idx.row() for idx in self.table.selectionModel().selectedRows()})
+
+    def _remove_selected_lines(self):
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "提示", "请先在明细表中选中要删除的行（可按住 Ctrl / Shift 多选）")
+            return
+        reply = QMessageBox.question(self, "删除明细", f"确定删除选中的 {len(rows)} 条明细吗？")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        for r in reversed(rows):
+            del self.document["lines"][r]
+        self._recalculate()
+
+    def _move_selected_lines(self, step: int):
+        rows = self._selected_rows()
+        lines = self.document["lines"]
+        if not rows or (step < 0 and rows[0] == 0) or (step > 0 and rows[-1] == len(lines) - 1):
+            return
+        for r in (rows if step < 0 else reversed(rows)):
+            lines[r + step], lines[r] = lines[r], lines[r + step]
+        self._recalculate()
+        self.table.clearSelection()
+        mode = self.table.selectionMode()
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        for r in rows:
+            self.table.selectRow(r + step)
+        self.table.setSelectionMode(mode)
+
     def _is_financial(self) -> bool:
         return self.doc_type.currentText() != "PL"
 
+    def _columns(self) -> list:
+        return FINANCIAL_LINE_COLUMNS if self._is_financial() else PL_LINE_COLUMNS
+
+    def _col(self, key: str):
+        keys = [k for k, _ in self._columns()]
+        return keys.index(key) if key in keys else None
+
     def _on_qty_or_price_changed(self):
-        financial = self._is_financial()
-        qty_col = 3
-        price_col = 5 if financial else None
+        qty_col, price_col = self._col("quantity"), self._col("unit_price")
         for row in range(self.table.rowCount()):
             qty_spin = self.table.cellWidget(row, qty_col)
             if qty_spin is not None:
@@ -411,13 +555,16 @@ class DocumentTab(QWidget):
         else:
             self._update_computed_cells(totals["lines"])
 
-        summary = (
-            f"总数量：{totals['total_quantity']}    "
-            f"总净重：{totals['total_net_weight']} kg    "
-        )
+        parts = [f"总数量：{calc.fmt_qty(totals['total_quantity'])}"]
+        if totals["total_net_weight"]:
+            parts.append(f"总净重：{calc.fmt_weight(totals['total_net_weight'])} kg")
+        if totals["total_gross_weight"]:
+            parts.append(f"总毛重：{calc.fmt_weight(totals['total_gross_weight'])} kg")
+        if totals["total_cbm"]:
+            parts.append(f"总体积：{totals['total_cbm']:.3f} CBM")
         if self._is_financial():
-            summary += f"总金额：{currency} {totals['total_amount']:,.2f}    "
-        self.totals_label.setText(summary)
+            parts.append(f"总金额：{currency} {totals['total_amount']:,.2f}")
+        self.totals_label.setText("    ".join(parts))
         if self._is_financial():
             words = calc.amount_in_words(totals["total_amount"], currency)
             for label, amount in calc.payment_schedule(totals["total_amount"], self._deposit_pct()):
@@ -432,15 +579,17 @@ class DocumentTab(QWidget):
         让"Description"这类需要较多空间的列拉伸，其余较短的列按内容自适应宽度。
         """
         header = self.table.horizontalHeader()
-        narrow_columns = {"No.", "Qty", "Unit", "COO", "HS Code", "操作"}
-        for col, name in enumerate(columns):
-            if name in narrow_columns:
+        narrow_columns = {"no", "unit", "coo", "hs_code", "op"}
+        # 描述列固定一个较宽的初始宽度，剩余空间留给备注列，避免窗口较小时描述被挤到只剩几个字
+        fixed_widths = {"quantity": 95, "unit_price": 105, "model_no": 110, "desc": 240}
+        for col, (key, _label) in enumerate(columns):
+            if key in narrow_columns:
                 header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-            elif name == "Description":
+            elif key == "remark":
                 header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
             else:
                 header.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
-                self.table.setColumnWidth(col, 90)
+                self.table.setColumnWidth(col, fixed_widths.get(key, 90))
 
     def _on_cell_changed(self, row: int, col: int):
         if row >= len(self.document["lines"]):
@@ -450,87 +599,76 @@ class DocumentTab(QWidget):
             return
         text = item.text()
         line = self.document["lines"][row]
-        financial = self._is_financial()
-        if financial:
-            field_map = {1: "model_no", 2: "_desc", 4: "unit", 7: "coo", 8: "_nw", 10: "hs_code", 11: "remark"}
-        else:
-            field_map = {1: "model_no", 2: "_desc", 4: "unit", 5: "coo", 6: "_nw", 8: "hs_code", 9: "remark"}
-        field = field_map.get(col)
-        if field == "_desc":
+        key = self._columns()[col][0]
+        if key == "desc":
             parts = text.split("\n", 1)
             line["name_en"] = parts[0]
             line["name_cn"] = parts[1] if len(parts) > 1 else ""
-        elif field == "_nw":
+        elif key in WEIGHT_KEYS:
             try:
-                line["net_weight"] = float(text) if text.strip() else 0.0
+                line[key] = float(text) if text.strip() else 0.0
             except ValueError:
-                pass
-        elif field:
-            line[field] = text
+                return
+            self._recalculate(rebuild_table=False)
+        elif key in TEXT_KEYS:
+            line[key] = text
 
     def _rebuild_table(self, computed_lines: list):
-        financial = self._is_financial()
-        columns = FINANCIAL_LINE_COLUMNS if financial else PL_LINE_COLUMNS
+        columns = self._columns()
         self.table.blockSignals(True)
         self.table.setColumnCount(len(columns))
-        self.table.setHorizontalHeaderLabels(columns)
+        self.table.setHorizontalHeaderLabels([label for _, label in columns])
         self.table.clearContents()
         self._apply_column_sizing(columns)
         self.table.setRowCount(len(computed_lines))
 
         for row, line in enumerate(computed_lines):
-            col = 0
-            self.table.setItem(row, col, QTableWidgetItem(str(row + 1))); col += 1
-            self.table.setItem(row, col, QTableWidgetItem(line.get("model_no", ""))); col += 1
-
-            desc = line.get("name_en", "")
-            if line.get("name_cn"):
-                desc += f"\n{line.get('name_cn')}"
-            desc_item = QTableWidgetItem(desc)
-            self.table.setItem(row, col, desc_item); col += 1
-
-            qty_spin = QDoubleSpinBox()
-            qty_spin.setMaximum(1_000_000)
-            qty_spin.setDecimals(2)
-            qty_spin.setValue(line.get("quantity", 0.0))
-            qty_spin.valueChanged.connect(self._on_qty_or_price_changed)
-            disable_accidental_scroll_edits(qty_spin)
-            self.table.setCellWidget(row, col, qty_spin); col += 1
-
-            self.table.setItem(row, col, QTableWidgetItem(line.get("unit", ""))); col += 1
-
-            if financial:
-                price_spin = QDoubleSpinBox()
-                price_spin.setMaximum(10_000_000)
-                price_spin.setDecimals(2)
-                price_spin.setValue(line.get("unit_price", 0.0))
-                price_spin.valueChanged.connect(self._on_qty_or_price_changed)
-                disable_accidental_scroll_edits(price_spin)
-                self.table.setCellWidget(row, col, price_spin); col += 1
-
-                self.table.setItem(row, col, QTableWidgetItem(f"{line['subtotal']:.2f}")); col += 1
-
-            self.table.setItem(row, col, QTableWidgetItem(line.get("coo", ""))); col += 1
-            self.table.setItem(row, col, QTableWidgetItem(calc.fmt_weight(line.get("net_weight", 0)))); col += 1
-            self.table.setItem(row, col, QTableWidgetItem(calc.fmt_weight(line["total_net_weight"]))); col += 1
-            self.table.setItem(row, col, QTableWidgetItem(line.get("hs_code", ""))); col += 1
-            self.table.setItem(row, col, QTableWidgetItem(line.get("remark", ""))); col += 1
-
-            del_btn = QPushButton("删除")
-            del_btn.clicked.connect(lambda _, r=row: self._remove_line(r))
-            self.table.setCellWidget(row, col, del_btn)
+            for col, (key, _label) in enumerate(columns):
+                if key == "quantity" or key == "unit_price":
+                    spin = _TrimmedSpinBox(0 if key == "quantity" else 2)
+                    spin.setMaximum(100_000_000)
+                    spin.setDecimals(3 if key == "quantity" else calc.PRICE_DECIMALS)
+                    spin.setValue(line.get(key, 0.0))
+                    spin.valueChanged.connect(self._on_qty_or_price_changed)
+                    disable_accidental_scroll_edits(spin)
+                    self.table.setCellWidget(row, col, spin)
+                elif key == "op":
+                    del_btn = QPushButton("删除")
+                    del_btn.clicked.connect(lambda _, r=row: self._remove_line(r))
+                    self.table.setCellWidget(row, col, del_btn)
+                else:
+                    self.table.setItem(row, col, self._cell_item(key, line, row))
 
         self.table.blockSignals(False)
 
+    def _cell_item(self, key: str, line: dict, row: int) -> QTableWidgetItem:
+        if key == "no":
+            text = str(row + 1)
+        elif key == "desc":
+            text = line.get("name_en", "")
+            if line.get("name_cn"):
+                text += f"\n{line.get('name_cn')}"
+        elif key == "subtotal":
+            text = f"{line['subtotal']:,.2f}"
+        elif key in WEIGHT_KEYS or key in ("total_net_weight", "total_gross_weight"):
+            text = calc.fmt_weight(line.get(key, 0))
+        else:
+            text = str(line.get(key, ""))
+        item = QTableWidgetItem(text)
+        if key in COMPUTED_KEYS:
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        return item
+
     def _update_computed_cells(self, computed_lines: list):
-        financial = self._is_financial()
+        # 只刷新计算列；必须屏蔽信号，否则写入显示用的（已四舍五入的）文字会被
+        # _on_cell_changed 当作用户输入写回数据，悄悄改掉原始重量
+        self.table.blockSignals(True)
         for row, line in enumerate(computed_lines):
-            nw_col = 8 if financial else 6
-            tnw_col = nw_col + 1
-            self.table.setItem(row, nw_col, QTableWidgetItem(calc.fmt_weight(line.get("net_weight", 0))))
-            self.table.setItem(row, tnw_col, QTableWidgetItem(calc.fmt_weight(line["total_net_weight"])))
-            if financial:
-                self.table.setItem(row, 6, QTableWidgetItem(f"{line['subtotal']:.2f}"))
+            for key in COMPUTED_KEYS - {"no"}:
+                col = self._col(key)
+                if col is not None:
+                    self.table.setItem(row, col, self._cell_item(key, line, row))
+        self.table.blockSignals(False)
 
     # ---------------- persistence ----------------
     def _selected_template_snapshot(self, combo: QComboBox) -> dict:
@@ -575,14 +713,44 @@ class DocumentTab(QWidget):
         if not doc.get("lines"):
             QMessageBox.warning(self, "提示", "请至少添加一条产品明细")
             return
+        if not self._ensure_unique_number():
+            return
+        doc = self._collect_document()
+        self._write_to_history(doc)
+        notify(self, f"✓ 单据 {doc.get('doc_number', '')} 已保存到历史记录")
+
+    def _ensure_unique_number(self) -> bool:
+        """编号已被历史中另一份单据使用时，提示并换成新编号；返回 False 表示用户取消。"""
+        doc = self._collect_document()
+        clash = any(d.get("doc_number") == doc.get("doc_number") and d["id"] != doc["id"]
+                    for d in storage.load_documents())
+        if not clash:
+            return True
+        reply = QMessageBox.question(
+            self, "编号重复",
+            f"单据编号 {doc.get('doc_number')} 已被历史中的另一份单据使用。\n是否换成新编号？",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+        self._generate_number()
+        return True
+
+    def _write_to_history(self, doc: dict):
         documents = storage.load_documents()
         existing_idx = next((i for i, d in enumerate(documents) if d["id"] == doc["id"]), None)
         if existing_idx is not None:
-            documents[existing_idx] = doc
+            documents[existing_idx] = copy.deepcopy(doc)
         else:
-            documents.append(doc)
+            documents.append(copy.deepcopy(doc))
         storage.save_documents(documents)
-        notify(self, f"✓ 单据 {doc.get('doc_number', '')} 已保存到历史记录")
+
+    def has_unsaved_changes(self) -> bool:
+        """当前单据有明细、且与历史中保存的版本不同（或从未保存）时返回 True。"""
+        doc = self._collect_document()
+        if not doc.get("lines"):
+            return False
+        saved = next((d for d in storage.load_documents() if d["id"] == doc["id"]), None)
+        return saved != doc
 
     def _export_document(self):
         doc = self._collect_document()
@@ -594,16 +762,36 @@ class DocumentTab(QWidget):
             return
         if not doc.get("doc_number"):
             self._generate_number()
-            doc = self._collect_document()
+        if not self._ensure_unique_number():
+            return
+        doc = self._collect_document()
 
+        fmt = self.export_format.currentText()
         export_dir = get_exports_dir()
+        target = os.path.join(export_dir, f"{doc.get('doc_number', 'DOC')}.{FORMAT_EXTENSIONS[fmt]}")
+        if os.path.exists(target):
+            reply = QMessageBox.question(
+                self, "文件已存在",
+                f"{os.path.basename(target)} 已存在，是否覆盖？\n（如需保留旧文件，请先点「生成新编号」）",
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
         try:
-            path = export_document_in_format(doc, self.export_format.currentText(), export_dir)
+            path = export_document_in_format(doc, fmt, export_dir)
+        except PermissionError:
+            QMessageBox.critical(
+                self, "导出失败",
+                f"无法写入 {os.path.basename(target)}：该文件可能正在 Word / Excel / PDF 阅读器中打开，"
+                "请关闭后重试。",
+            )
+            return
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"文件生成过程中发生错误：{e}")
             return
 
-        notify(self, f"✓ 已导出至 {path}")
+        # 导出即保存：保证历史记录与发给客户的文件一致
+        self._write_to_history(doc)
+        show_export_done(self, path, "（已同时保存到历史记录）")
 
     def get_current_document(self) -> dict:
         """供导出模块调用，获取当前联动计算后的完整单据数据"""
@@ -613,7 +801,10 @@ class DocumentTab(QWidget):
         """从历史记录中加载一份单据到编辑界面（供"一键复制新建"使用）"""
         self.document = doc
         self._refresh_customer_combo()
-        self._refresh_template_combos()
+        self._select_templates_for(doc)
+        # 复制新建视为一份新单据：日期与有效期按今天重新生成
+        self.date_edit.setDate(QDate.currentDate())
+        self._set_default_dates()
         self.doc_type.setCurrentText(doc.get("doc_type", "PI"))
         idx = next(
             (i for i in range(self.customer_combo.count())
@@ -622,6 +813,8 @@ class DocumentTab(QWidget):
         )
         self.customer_combo.setCurrentIndex(idx)
         self.doc_number.setText(doc.get("doc_number", ""))
+        if not self.doc_number.text():
+            self._generate_number()
         self.destination.setText(doc.get("destination", ""))
         self.currency.setCurrentText(doc.get("currency", "USD"))
         self.remark.setText(doc.get("remark", ""))

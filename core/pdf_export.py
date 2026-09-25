@@ -20,6 +20,7 @@ from reportlab.platypus import (
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfgen import canvas as canvas_module
 from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.lib.utils import simpleSplit
 
 from core import calc
 from core.fonts import ensure_fonts_registered
@@ -106,13 +107,16 @@ def _draw_repeating_header(c, styles, own: dict, customer: dict, doc_type: str, 
     if customer.get("gst_no"):
         recipient_lines.append((regular, 8, f"GST No.: {customer.get('gst_no')}"))
 
+    # 左右两栏各占页面一半宽度，过长的名称/地址在栏内换行
+    column_w = (page_w - 2 * PAGE_MARGIN) / 2 - 4 * mm
     y = top_y - 4
     for font, size, text in recipient_lines:
         if not text:
             continue
         c.setFont(font, size)
-        c.drawString(PAGE_MARGIN, y, text)
-        y -= size + 2.5
+        for part in simpleSplit(text, font, size, column_w):
+            c.drawString(PAGE_MARGIN, y, part)
+            y -= size + 2.5
 
     # --- 右：Own 信头（含 Logo，固定不变）+ 单据标题/页码 ---
     right_x = page_w - PAGE_MARGIN
@@ -150,13 +154,16 @@ def _draw_repeating_header(c, styles, own: dict, customer: dict, doc_type: str, 
     if own.get("gst_no"):
         own_lines.append((regular, 8, f"GST No.: {own.get('gst_no')}"))
 
+    own_w = (page_w - 2 * PAGE_MARGIN) * 0.65
     y = top_y - 34 * mm
     for font, size, text in own_lines:
         if not text:
             continue
         c.setFont(font, size)
-        c.drawRightString(right_x, y, text)
-        y -= size + 2.5
+        # 本公司信息位于客户信息下方（从 34mm 处开始），可用更宽的范围，减少不必要的换行
+        for part in simpleSplit(text, font, size, own_w):
+            c.drawRightString(right_x, y, part)
+            y -= size + 2.5
 
     c.setStrokeColor(colors.HexColor("#5B9BD5"))
     c.setLineWidth(1)
@@ -293,7 +300,8 @@ def _right_column(doc: dict, styles, width: float):
 # ---------------- 产品明细表 ----------------
 FINANCIAL_HEADERS = ["No.", "Model", "Description", "Qty", "Unit", "Unit Price", "Total Price",
                      "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
-PL_HEADERS = ["No.", "Model", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.", "HS Code", "Remark"]
+PL_HEADERS = ["No.", "Model", "Description", "Qty", "Unit", "COO", "Net Weight", "Total N.W.",
+              "Gross Weight", "Total G.W.", "HS Code", "Remark"]
 
 
 def _item_table(computed_lines: list, currency: str, styles, financial: bool, content_width: float):
@@ -301,7 +309,7 @@ def _item_table(computed_lines: list, currency: str, styles, financial: bool, co
     if financial:
         weights = [5, 13, 20, 7, 6, 12, 13, 6, 8, 9, 11, 9]
     else:
-        weights = [6, 15, 24, 8, 8, 8, 10, 10, 12, 12]
+        weights = [5, 13, 22, 7, 6, 6, 9, 9, 9, 9, 11, 9]
     total_weight = sum(weights)
     col_widths = [content_width * w / total_weight for w in weights]
     width_of = dict(zip(headers, col_widths))
@@ -333,12 +341,19 @@ def _item_table(computed_lines: list, currency: str, styles, financial: bool, co
             _wrap(line.get("unit", ""), styles["cell_center"]),
         ]
         if financial:
-            row.append(num("Unit Price", f"{line.get('unit_price', 0):,.2f}"))
+            row.append(num("Unit Price", calc.fmt_unit_price(line.get("unit_price", 0))))
             row.append(num("Total Price", f"{line.get('subtotal', 0):,.2f}"))
         row.extend([
             _wrap(line.get("coo", ""), styles["cell_center"]),
             num("Net Weight", calc.fmt_weight(line.get("net_weight", 0))),
             num("Total N.W.", calc.fmt_weight(line["total_net_weight"])),
+        ])
+        if not financial:
+            row.extend([
+                num("Gross Weight", calc.fmt_weight(line.get("gross_weight", 0))),
+                num("Total G.W.", calc.fmt_weight(line["total_gross_weight"])),
+            ])
+        row.extend([
             _wrap(line.get("hs_code", ""), styles["cell_center"]),
             _wrap(line.get("remark", ""), styles["cell"]),
         ])
@@ -457,9 +472,7 @@ def export_document(doc: dict, filepath: str) -> str:
             elements.append(schedule)
             elements.append(Spacer(1, 6))
 
-    summary_parts = [f"Total Qty: {calc.fmt_qty(totals['total_quantity'])}"]
-    if totals["total_net_weight"]:
-        summary_parts.append(f"Total N.W.: {totals['total_net_weight']:.2f} kg")
+    summary_parts = calc.summary_parts(totals)
     elements.append(Paragraph("&nbsp;&nbsp;&nbsp;&nbsp;".join(summary_parts), styles["normal"]))
     elements.append(Spacer(1, 8))
 

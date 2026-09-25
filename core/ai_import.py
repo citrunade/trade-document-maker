@@ -29,6 +29,12 @@ SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".docx", ".jpg", ".jpeg", ".png
 # 判定"文字内容过于稀疏、需改用图片识别"的最小有效字符数阈值
 MIN_TEXT_CHARS = 20
 
+# 单次识别的 PDF 页数上限；超出时提示拆分，而不是静默截断（此前只读前 5 页，长订单会漏行）
+MAX_PDF_PAGES = 10
+
+# 单次发送给模型的文字上限（约 3 万 token）：超大的 Excel/Word 会很慢、费用高，且可能超出模型上限
+MAX_TEXT_CHARS = 60_000
+
 
 class AIImportError(Exception):
     pass
@@ -82,24 +88,45 @@ def _page_text_with_tables(page) -> str:
     普通 get_text() 会把表格逐单元格拆成独立行，数量/单价/金额列的对应关系丢失，
     这是 AI 把数量与单价填错的主要原因；Markdown 表格保留了行列结构。
     """
-    text = page.get_text(sort=True).strip()
-    if not text:
+    if not page.get_text().strip():
         return ""
     try:
-        tables = [t.to_markdown().strip() for t in page.find_tables().tables]
+        found = [t for t in page.find_tables().tables if t.to_markdown().strip()]
     except Exception:
-        tables = []
-    tables = [t for t in tables if t]
-    if tables:
-        text += "\n\n【页面中的表格（行列结构）】\n\n" + "\n\n".join(tables)
-    return text
+        found = []
+    if not found:
+        return page.get_text(sort=True).strip()
+
+    # 表格区域内的文字只以 Markdown 表格形式发送一次；若再按普通文字重复发送，
+    # 同一明细行会出现两次，模型容易重复计数或把数量/单价对应到错误的行。
+    table_rects = [fitz.Rect(t.bbox) for t in found]
+    outside = []
+    for x0, y0, x1, y1, block_text, *_ in page.get_text("blocks", sort=True):
+        block = fitz.Rect(x0, y0, x1, y1)
+        if any(block.intersects(r) for r in table_rects):
+            continue
+        if block_text.strip():
+            outside.append(block_text.strip())
+    tables = "\n\n".join(t.to_markdown().strip() for t in found)
+    return "\n".join(outside) + "\n\n【表格（行列结构）】\n\n" + tables
 
 
 # ---------------- Excel 内容提取 ----------------
 def xlsx_to_markdown(path: str) -> str:
+    """
+    读取所有工作表：发票与装箱单常分属不同工作表（重量通常只在 Packing List 中），
+    只读第一张表会漏掉重量。header=None 保留原始表头行，避免出现 "Unnamed: 3" 这类列名。
+    """
     import pandas as pd
-    df = pd.read_excel(path, dtype=str).fillna("")
-    return df.to_markdown(index=False)
+    sheets = pd.read_excel(path, dtype=str, header=None, sheet_name=None)
+    parts = []
+    for name, df in sheets.items():
+        df = df.fillna("").astype(str)
+        df = df.loc[(df != "").any(axis=1), (df != "").any(axis=0)]
+        if df.empty:
+            continue
+        parts.append(f"## 工作表：{name}\n\n" + df.to_markdown(index=False, headers=[""] * df.shape[1]))
+    return "\n\n".join(parts)
 
 
 def xlsx_extract_images(path: str) -> list:
@@ -224,6 +251,8 @@ PRODUCT_PROMPT = """你是外贸单据信息提取助手。用户会提供一份
 DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提供一份采购订单(PO)或类似文件内容，
 请从中提取所有产品明细行，并仅以如下 JSON 对象格式返回（每行一个对象，找不到的字段填 0 或空字符串，不要编造信息）：
 {
+  "doc_total_quantity": 0.0,
+  "doc_total_amount": 0.0,
   "items": [
     {
     "model_no": "型号",
@@ -234,6 +263,10 @@ DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提�
     "quantity": 0.0,
     "unit_price": 0.0,
     "amount": 0.0,
+    "unit_net_weight": 0.0,
+    "total_net_weight": 0.0,
+    "unit_gross_weight": 0.0,
+    "total_gross_weight": 0.0,
     "remark": "备注（找到才填写）"
     }
   ]
@@ -246,6 +279,16 @@ DOCUMENT_LINES_PROMPT = """你是外贸单据信息提取助手。用户会提�
   也不能把单价误填入 quantity。
 - amount：金额/总价（Amount/Total），如表格中有该列，原样提取其数字，不要自己计算；
   找不到该列则填 0。此字段仅用于核对 quantity × unit_price 是否正确，不会直接使用。
+- doc_total_quantity / doc_total_amount：文件上印刷的合计数量与合计金额（如 "Total Qty"、
+  "TOTAL"、"合计"），原样抄录，不要自己计算；找不到填 0。
+- 每一个明细行都必须输出且只输出一次，不要遗漏、合并或重复；同一行跨页时按一行处理。
+- 重量（单位统一换算为千克 kg；如原文为克 g 则除以 1000）：
+  - unit_net_weight / unit_gross_weight：每件的净重/毛重（列名如 "Unit N.W."、"单重"、"N.W./PC"）。
+  - total_net_weight / total_gross_weight：该行合计净重/毛重（列名如 "N.W."、"Net Weight"、
+    "净重"、"Total N.W."、"G.W."、"毛重"）。多数单据的 N.W./G.W. 列是该行合计值。
+  - 原文只有一种时，只填对应字段，另一个填 0，不要自己换算。
+  - 若文件含多个工作表/多个部分（如 Invoice 与 Packing List），重量通常在 Packing List 中，
+    请按型号/序号与发票行对应后填入同一行。
 只返回有效 JSON 对象，不要包含任何其他说明文字。"""
 
 
@@ -260,8 +303,16 @@ def _run_extraction(path: str, prompt: str, config: dict) -> str:
 
     kind = get_file_kind(path)
 
+    def _check_size(text: str) -> str:
+        if len(text) > MAX_TEXT_CHARS:
+            raise AIImportError(
+                f"文件内容过多（约 {len(text):,} 字符，上限 {MAX_TEXT_CHARS:,}）。"
+                "请删除无关的工作表/内容，或拆分成几个文件分别导入。"
+            )
+        return text
+
     if kind == "xlsx":
-        table_text = xlsx_to_markdown(path)
+        table_text = _check_size(xlsx_to_markdown(path))
         if len(table_text.strip()) >= MIN_TEXT_CHARS:
             return ai_client.extract_from_text(api_key, base_url, text_model, prompt, table_text)
         # 表格文字内容过于稀疏（如产品信息以图片贴在单元格中），改用嵌入图片走视觉模型
@@ -274,6 +325,7 @@ def _run_extraction(path: str, prompt: str, config: dict) -> str:
 
     if kind == "docx":
         text, images = extract_docx_content(path)
+        _check_size(text)
         if len(text.strip()) >= MIN_TEXT_CHARS:
             return ai_client.extract_from_text(api_key, base_url, text_model, prompt, text)
         # 文字内容过于稀疏（如整页以图片排版），改用嵌入图片走视觉模型
@@ -294,17 +346,20 @@ def _run_extraction(path: str, prompt: str, config: dict) -> str:
         pages = extract_pdf_pages(path)
         if not pages:
             raise AIImportError("无法从该 PDF 中读取任何内容（可能是空白文件）。")
-        # 只处理前 5 页，避免超长文档导致费用过高或超出模型上下文
-        pages = pages[:5]
-        if all(p[0] == "text" for p in pages):
-            combined_text = "\n\n".join(p[1] for p in pages)
-            return ai_client.extract_from_text(api_key, base_url, text_model, prompt, combined_text)
-        # 存在扫描页：把所有扫描页一次性交给视觉模型（此前只识别第一页，多页 PO 会漏行）
+        if len(pages) > MAX_PDF_PAGES:
+            raise AIImportError(
+                f"该 PDF 共 {len(pages)} 页，超过单次识别上限 {MAX_PDF_PAGES} 页。"
+                "为避免遗漏明细行，请将 PDF 拆分后分别导入。"
+            )
+        text_pages = [p[1] for p in pages if p[0] == "text"]
         image_pages = [p[1] for p in pages if p[0] == "image"]
-        if image_pages:
-            return ai_client.extract_from_images(api_key, base_url, vision_model, prompt, image_pages, "image/png")
-        combined_text = "\n\n".join(p[1] for p in pages if p[0] == "text")
-        return ai_client.extract_from_text(api_key, base_url, text_model, prompt, combined_text)
+        combined_text = _check_size("\n\n".join(text_pages))
+        if not image_pages:
+            return ai_client.extract_from_text(api_key, base_url, text_model, prompt, combined_text)
+        # 存在扫描页：扫描页图片与文字页内容一起交给视觉模型，两者都不遗漏
+        return ai_client.extract_from_images(
+            api_key, base_url, vision_model, prompt, image_pages, "image/png", extra_text=combined_text,
+        )
 
     raise AIImportError(f"未知文件类型：{kind}")
 
@@ -360,15 +415,24 @@ def import_products(path: str, config: dict) -> list:
     return products
 
 
+class ExtractedLines(list):
+    """明细行列表，附带 warnings：与文件上印刷的合计数量/金额核对不一致时的提示。"""
+    warnings: list = []
+
+
 def import_document_lines(path: str, config: dict) -> list:
     """从采购订单(PO)等文件中提取单据明细行，返回符合 make_doc_line 字段结构的 dict 列表（未保存）"""
     raw = _run_extraction(path, DOCUMENT_LINES_PROMPT, config)
     data = _parse_json_response(raw)
+    printed_qty = printed_amount = 0.0
     if isinstance(data, dict):
+        printed_qty = _to_float(data.get("doc_total_quantity", 0))
+        printed_amount = _to_float(data.get("doc_total_amount", 0))
         data = data.get("items", [])
     if not isinstance(data, list):
         raise AIImportError("AI 返回的明细信息格式不正确（应包含 items 数组）。")
-    lines = []
+    lines = ExtractedLines()
+    lines.warnings = []
     for item in data:
         if not isinstance(item, dict):
             continue
@@ -383,6 +447,9 @@ def import_document_lines(path: str, config: dict) -> list:
         if amount and abs(quantity * unit_price - amount) > max(0.01, amount * 0.01):
             remark = (remark + " ⚠数量×单价与金额不符，请核对").strip()
 
+        net_weight = _per_unit_weight(item, "net", quantity)
+        gross_weight = _per_unit_weight(item, "gross", quantity)
+
         pseudo_product = {
             "id": "",
             "model_no": str(item.get("model_no", "")),
@@ -391,8 +458,8 @@ def import_document_lines(path: str, config: dict) -> list:
             "hs_code": str(item.get("hs_code", "")),
             "unit": str(item.get("unit", "pcs")) or "pcs",
             "unit_price": unit_price,
-            "net_weight": 0.0,
-            "gross_weight": 0.0,
+            "net_weight": net_weight,
+            "gross_weight": gross_weight,
             "length_mm": 0.0,
             "width_mm": 0.0,
             "height_mm": 0.0,
@@ -401,10 +468,70 @@ def import_document_lines(path: str, config: dict) -> list:
         }
         line = make_doc_line(pseudo_product, quantity=quantity)
         lines.append(line)
+
+    # 与文件上印刷的合计核对：识别错一行（如数量 1 读成 10）时，合计必然对不上
+    sum_qty = round(sum(l["quantity"] for l in lines), 3)
+    sum_amount = round(sum(l["quantity"] * l["unit_price"] for l in lines), 2)
+    if printed_qty and abs(sum_qty - printed_qty) > 0.001:
+        lines.warnings.append(
+            f"识别出的明细数量合计为 {sum_qty:g}，但文件上印刷的合计数量为 {printed_qty:g}。"
+        )
+    if printed_amount and abs(sum_amount - printed_amount) > max(0.05, printed_amount * 0.001):
+        lines.warnings.append(
+            f"识别出的明细金额合计为 {sum_amount:,.2f}，但文件上印刷的合计金额为 {printed_amount:,.2f}。"
+        )
     return lines
 
 
+def _normalize_model(model_no: str) -> str:
+    return "".join(str(model_no or "").split()).upper()
+
+
+# 物料库中可补全的字段：仅在文件中缺少（为空或 0）时补全，文件中已有的值优先
+LIBRARY_FILL_FIELDS = (
+    "name_cn", "name_en", "hs_code", "coo", "net_weight", "gross_weight",
+    "length_mm", "width_mm", "height_mm",
+)
+
+
+def fill_from_product_library(lines: list, products: list) -> int:
+    """
+    按型号（忽略大小写与空格）把 AI 识别出的明细行与物料库产品对应，补全文件中缺少的
+    重量/HS编码/原产国/中文品名/尺寸等字段。单价与数量始终以文件为准。返回匹配到的行数。
+    """
+    by_model = {}
+    for p in products:
+        key = _normalize_model(p.get("model_no"))
+        if key:
+            by_model.setdefault(key, p)
+    matched = 0
+    for line in lines:
+        product = by_model.get(_normalize_model(line.get("model_no")))
+        if not product:
+            continue
+        matched += 1
+        line["product_id"] = product.get("id", "")
+        for field in LIBRARY_FILL_FIELDS:
+            if not line.get(field) and product.get(field):
+                line[field] = product[field]
+    return matched
+
+
+def _per_unit_weight(item: dict, kind: str, quantity: float) -> float:
+    """单据明细存储的是每件重量；原文只给出行合计重量时按数量折算为每件重量。"""
+    unit = _to_float(item.get(f"unit_{kind}_weight", 0))
+    if unit:
+        return unit
+    total = _to_float(item.get(f"total_{kind}_weight", 0))
+    if total and quantity:
+        return round(total / quantity, 4)
+    return 0.0
+
+
 def _to_float(value) -> float:
+    if isinstance(value, str):
+        match = re.search(r"-?\d[\d,]*\.?\d*", value)
+        value = match.group(0).replace(",", "") if match else ""
     try:
         return float(value)
     except (ValueError, TypeError):

@@ -15,6 +15,10 @@ CURRENCY_NAMES = {
     "EUR": "EUROS",
     "RMB": "RMB YUAN",
     "CNY": "RMB YUAN",
+    "SGD": "SINGAPORE DOLLARS",
+    "HKD": "HONG KONG DOLLARS",
+    "GBP": "POUNDS STERLING",
+    "JPY": "JAPANESE YEN",
 }
 
 
@@ -23,11 +27,12 @@ def line_subtotal(quantity: float, unit_price: float) -> float:
 
 
 def line_total_net_weight(quantity: float, net_weight: float) -> float:
-    return round(quantity * net_weight, 2)
+    # 保留 3 位：小件（如 3 × 0.004 kg）按 2 位会被舍成 0.01
+    return round(quantity * net_weight, 3)
 
 
 def line_total_gross_weight(quantity: float, gross_weight: float) -> float:
-    return round(quantity * gross_weight, 2)
+    return round(quantity * gross_weight, 3)
 
 
 def line_total_cbm(quantity: float, length_mm: float, width_mm: float, height_mm: float) -> float:
@@ -54,8 +59,8 @@ def compute_totals(lines: list) -> dict:
     return {
         "total_quantity": round(sum(l.get("quantity", 0.0) for l in computed), 3),
         "total_amount": round(sum(l["subtotal"] for l in computed), 2),
-        "total_net_weight": round(sum(l["total_net_weight"] for l in computed), 2),
-        "total_gross_weight": round(sum(l["total_gross_weight"] for l in computed), 2),
+        "total_net_weight": round(sum(l["total_net_weight"] for l in computed), 3),
+        "total_gross_weight": round(sum(l["total_gross_weight"] for l in computed), 3),
         "total_cbm": round(sum(l["total_cbm"] for l in computed), 3),
         "lines": computed,
     }
@@ -155,7 +160,10 @@ def payment_schedule(total_amount: float, deposit_pct) -> list:
 
 def fmt_weight(value: float) -> str:
     """重量为 0（即没有重量信息）时显示空白，而不是 0.00。"""
-    return f"{value:.2f}" if value else ""
+    if not value:
+        return ""
+    text = f"{value:.3f}"
+    return text[:-1] if text.endswith("0") else text
 
 
 def effective_terms_of_payment(doc: dict) -> str:
@@ -168,3 +176,26 @@ def fmt_qty(value: float) -> str:
     if float(value).is_integer():
         return f"{int(value):,}"
     return f"{value:,.3f}".rstrip("0").rstrip(".")
+
+
+PRICE_DECIMALS = 4
+
+
+def fmt_unit_price(value: float) -> str:
+    """单价至少 2 位、最多 4 位小数：0.125 显示为 0.125 而不是 0.13，保证 单价×数量 与总价对得上。"""
+    text = f"{value:,.{PRICE_DECIMALS}f}"
+    while text.endswith("0") and len(text.split(".")[1]) > 2:
+        text = text[:-1]
+    return text
+
+
+def summary_parts(totals: dict) -> list:
+    """单据底部汇总：总数量 + 有数据时才显示的总净重/总毛重/总体积（没有数据不显示 0）。"""
+    parts = [f"Total Qty: {fmt_qty(totals['total_quantity'])}"]
+    if totals["total_net_weight"]:
+        parts.append(f"Total N.W.: {fmt_weight(totals['total_net_weight'])} kg")
+    if totals["total_gross_weight"]:
+        parts.append(f"Total G.W.: {fmt_weight(totals['total_gross_weight'])} kg")
+    if totals["total_cbm"]:
+        parts.append(f"Total Measurement: {totals['total_cbm']:.3f} CBM")
+    return parts

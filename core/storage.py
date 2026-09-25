@@ -223,15 +223,12 @@ def generate_invoice_number() -> str:
     """
     date_part = datetime.now().strftime("%y%m%d")
     base = f"BAAS{date_part}"
-    counters = load_counters()
-    used_key = f"INVOICE_USED_{base}"
-    used_letters = set(counters.get(used_key, []))
+    # 以历史中实际保存过的单据编号为准：打开软件、点"新建"生成的编号若从未保存/导出，
+    # 不应占用当天仅有的 8 个字母（此前会占用，导致当天很快退回到时间戳编号）
+    used_numbers = {d.get("doc_number", "") for d in load_documents()}
 
     for letter in string.ascii_uppercase[:8]:  # A-H
-        if letter not in used_letters:
-            used_letters.add(letter)
-            counters[used_key] = sorted(used_letters)
-            save_counters(counters)
+        if f"{base}{letter}" not in used_numbers:
             return f"{base}{letter}"
 
     # A-H 均已用尽（同一天生成了 8 份以上单据），退回加毫秒时间戳保证唯一

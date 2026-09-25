@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 from core import storage
 from core.document_export import export_document_in_format
 from core.paths import get_exports_dir
-from ui.toast import notify
+from ui.toast import notify, show_export_done
 
 COLUMNS = [
     ("doc_type", "类型"),
@@ -138,10 +138,16 @@ class HistoryTab(QWidget):
         export_dir = get_exports_dir()
         try:
             path = export_document_in_format(doc, self.export_format.currentText(), export_dir)
+        except PermissionError:
+            QMessageBox.critical(
+                self, "导出失败",
+                "无法写入导出文件：该文件可能正在 Word / Excel / PDF 阅读器中打开，请关闭后重试。",
+            )
+            return
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"文件生成过程中发生错误：{e}")
             return
-        notify(self, f"✓ 已导出至 {path}")
+        show_export_done(self, path)
 
     def _delete_selected(self):
         doc = self._selected_document()

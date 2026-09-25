@@ -1,7 +1,7 @@
 """
 主窗口：Tab 页整合设置/客户/物料/制单/历史/模板 各功能模块
 """
-from PyQt6.QtWidgets import QMainWindow, QTabWidget
+from PyQt6.QtWidgets import QMainWindow, QTabWidget, QMessageBox
 
 from ui.settings_tab import SettingsTab
 from ui.customers_tab import CustomersTab
@@ -52,6 +52,28 @@ class MainWindow(QMainWindow):
         # 切换到历史页时刷新列表，确保新保存的单据可见
         elif widget is self.history_tab:
             self.history_tab.reload()
+
+    def closeEvent(self, event):
+        try:
+            unsaved = self.document_tab.has_unsaved_changes()
+        except Exception:
+            unsaved = False
+        if unsaved:
+            reply = QMessageBox.question(
+                self, "单据未保存",
+                "当前单据有未保存的修改，关闭后将丢失。\n是否先保存到历史记录？",
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if reply == QMessageBox.StandardButton.Save:
+                self.document_tab._save_document()
+                if self.document_tab.has_unsaved_changes():
+                    event.ignore()  # 缺少收件方等导致未能保存，留在界面让用户处理
+                    return
+        event.accept()
 
     def _load_doc_into_document_tab(self, doc: dict):
         self.document_tab.load_document(doc)
