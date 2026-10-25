@@ -2,7 +2,9 @@
 AI 导入功能的公共辅助逻辑：隐私提示、文件选择、忙碌光标、通用审核表格对话框。
 供 customers_tab / products_tab / document_tab 复用。
 """
-from PyQt6.QtCore import Qt, QThread, QEventLoop, QTimer
+import threading
+
+from PyQt6.QtCore import Qt, QThread, QEventLoop, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QFileDialog, QMessageBox, QDialog, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QPushButton, QDialogButtonBox, QCheckBox,
@@ -58,14 +60,20 @@ def run_ai_extraction(parent, extractor_fn, path: str):
     config = get_ai_config()
     # 在后台线程中调用 AI（最长可能需要 1~2 分钟），界面显示进度窗口而不是"未响应"
     worker = _ExtractionWorker(extractor_fn, path, config)
-    progress = QProgressDialog("AI 正在识别文件内容，请稍候…\n（多页文件可能需要 1~2 分钟）", None, 0, 0, parent)
+    progress = QProgressDialog("AI 正在识别文件内容，请稍候…\n（多页文件可能需要 1~2 分钟）", "取消", 0, 0, parent)
+    worker.progress.connect(lambda done, total: _show_progress(progress, done, total))
     progress.setWindowTitle("AI 导入")
     progress.setWindowModality(Qt.WindowModality.WindowModal)
     progress.setMinimumDuration(0)
-    progress.setCancelButton(None)
+    # 进度到 100% 时不要自动关闭/重置：窗口由下面统一关闭
+    progress.setAutoReset(False)
+    progress.setAutoClose(False)
     progress.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
     loop = QEventLoop()
     worker.finished.connect(loop.quit)
+    # 取消：通知工作线程不再发出新请求，并立即结束等待（已发出的请求在后台完成后丢弃结果）
+    progress.canceled.connect(worker.cancel.set)
+    progress.canceled.connect(loop.quit)
     # 兜底轮询：若线程在进入事件循环前就已结束（错过 finished 信号），也能正常退出
     poll = QTimer()
     poll.timeout.connect(lambda: loop.quit() if worker.isFinished() else None)
@@ -74,8 +82,17 @@ def run_ai_extraction(parent, extractor_fn, path: str):
     progress.show()
     loop.exec()
     poll.stop()
-    worker.wait()
+    # 关闭进度窗口本身也会发出 canceled 信号，先断开，免得把正常完成误当成取消
+    progress.canceled.disconnect()
     progress.close()
+
+    if worker.cancel.is_set():
+        if not worker.isFinished():
+            # 线程仍在等待已发出的请求返回：保留引用直到其结束，避免 QThread 运行中被销毁
+            _cancelled_workers.add(worker)
+            worker.finished.connect(lambda: _cancelled_workers.discard(worker))
+        return None
+    worker.wait()
 
     error = worker.error
     if error is None:
@@ -87,16 +104,35 @@ def run_ai_extraction(parent, extractor_fn, path: str):
     return None
 
 
+_cancelled_workers = set()
+
+
+def _show_progress(dialog, done: int, total: int):
+    """长文件分段识别时显示进度（第几部分已完成）；单段文件保持原来的不确定进度条。"""
+    if total <= 1 or dialog.wasCanceled():
+        return
+    dialog.setMaximum(total)
+    dialog.setValue(done)
+    dialog.setLabelText(
+        f"文件较长，已拆成 {total} 部分分别识别，已完成 {done}/{total}…\n"
+        "（每部分约需 10~40 秒，请稍候）"
+    )
+
+
 class _ExtractionWorker(QThread):
+    # 由工作线程发出，Qt 自动排队到主线程更新进度窗口
+    progress = pyqtSignal(int, int)
+
     def __init__(self, fn, path, config):
         super().__init__()
         self.fn, self.path, self.config = fn, path, config
         self.result = None
         self.error = None
+        self.cancel = threading.Event()
 
     def run(self):
         try:
-            self.result = self.fn(self.path, self.config)
+            self.result = self.fn(self.path, self.config, progress=self.progress.emit, cancel=self.cancel)
         except Exception as e:  # 在主线程中统一弹窗提示
             self.error = e
 
@@ -111,7 +147,9 @@ def _display(value) -> str:
 
 
 # 审核表中需要较宽显示的列及其最大宽度（像素）
-WIDE_REVIEW_COLUMNS = {"name_en": 280, "name_cn": 200, "address_en": 320, "model_no": 160, "remark": 220}
+WIDE_REVIEW_COLUMNS = {
+    "name_en": 280, "name_cn": 200, "address_en": 320, "model_no": 160, "remark": 220, "_source": 200,
+}
 
 
 class ImportReviewDialog(QDialog):
@@ -129,6 +167,9 @@ class ImportReviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumSize(1000, 560)
+        # 长文件分段识别时，每行带 "_source"（来自第几页/哪个工作表），显示为只读的“来源”列方便对照原件
+        if any(row.get("_source") for row in rows):
+            columns = list(columns) + [("_source", "来源")]
         self.columns = columns
         self.original_rows = rows
 
@@ -146,7 +187,10 @@ class ImportReviewDialog(QDialog):
             checkbox.setChecked(True)
             self.table.setCellWidget(r, 0, checkbox)
             for c, (key, _label) in enumerate(columns, start=1):
-                self.table.setItem(r, c, QTableWidgetItem(_display(row_data.get(key, ""))))
+                cell = QTableWidgetItem(_display(row_data.get(key, "")))
+                if key == "_source":
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, c, cell)
 
         # 按内容自适应列宽后再设上下限：短字段（单位/数量）不再占用和品名一样的宽度
         header = self.table.horizontalHeader()
@@ -178,5 +222,6 @@ class ImportReviewDialog(QDialog):
             for c, (key, _label) in enumerate(self.columns, start=1):
                 item = self.table.item(r, c)
                 row_copy[key] = item.text() if item else ""
+            row_copy.pop("_source", None)  # 仅供审核时对照，不保存到单据/物料库
             result.append(row_copy)
         return result

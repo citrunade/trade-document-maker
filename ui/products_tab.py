@@ -316,6 +316,12 @@ class ProductsTab(QWidget):
             ("gross_weight", "毛重(kg)"), ("length_mm", "长(mm)"), ("width_mm", "宽(mm)"),
             ("height_mm", "高(mm)"), ("unit_price", "单价"), ("currency", "币种"),
         ]
+        warnings = getattr(extracted, "warnings", [])
+        if warnings:
+            QMessageBox.warning(
+                self, "请核对识别结果",
+                "\n".join(warnings) + "\n\n请在接下来的审核表中逐行核对。",
+            )
         dialog = ImportReviewDialog(self, "审核 AI 识别的产品信息", review_columns, extracted)
         if not dialog.exec():
             return

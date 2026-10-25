@@ -21,7 +21,14 @@ REQUEST_TIMEOUT = (15, 120)
 
 
 class AIClientError(Exception):
-    """AI 调用失败时抛出，内容可直接显示给用户。"""
+    """
+    AI 调用失败时抛出，内容可直接显示给用户。
+    retryable 表示临时性错误（超时、网络中断、限流、服务器 5xx），稍后重试可能成功。
+    """
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _validate_base_url(base_url: str) -> str:
@@ -94,10 +101,11 @@ def _post_chat_completion(
         ) from exc
     except requests.exceptions.ConnectionError as exc:
         raise AIClientError(
-            "无法连接阿里云百炼 API。请检查网络连接，并确认可访问 dashscope.aliyuncs.com。"
+            "无法连接阿里云百炼 API。请检查网络连接，并确认可访问 dashscope.aliyuncs.com。",
+            retryable=True,
         ) from exc
     except requests.exceptions.Timeout as exc:
-        raise AIClientError("请求阿里云百炼 API 超时，请稍后重试。") from exc
+        raise AIClientError("请求阿里云百炼 API 超时，请稍后重试。", retryable=True) from exc
     except requests.exceptions.RequestException as exc:
         raise AIClientError(f"请求阿里云百炼 API 时发生错误：{exc}") from exc
 
@@ -111,11 +119,13 @@ def _post_chat_completion(
         )
     if resp.status_code == 429:
         raise AIClientError(
-            "阿里云百炼请求过于频繁或账户额度不足，请稍后重试或检查账户余额。"
+            "阿里云百炼请求过于频繁或账户额度不足，请稍后重试或检查账户余额。",
+            retryable=True,
         )
     if resp.status_code != 200:
         raise AIClientError(
-            f"阿里云百炼返回错误（HTTP {resp.status_code}）：{_extract_api_error(resp)}"
+            f"阿里云百炼返回错误（HTTP {resp.status_code}）：{_extract_api_error(resp)}",
+            retryable=resp.status_code >= 500,
         )
 
     try:
@@ -125,7 +135,7 @@ def _post_chat_completion(
             raise ValueError("返回内容为空")
         return content
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise AIClientError(f"阿里云百炼返回了无法解析的响应：{exc}") from exc
+        raise AIClientError(f"阿里云百炼返回了无法解析的响应：{exc}", retryable=True) from exc
 
 
 def test_connection(api_key: str, base_url: str, text_model: str) -> None:
@@ -168,10 +178,12 @@ def extract_from_images(
     images: list,
     mime_type: str = "image/png",
     extra_text: str = "",
+    note: str = "",
 ) -> str:
     """
     多张图片（如多页扫描件）放在同一次请求中，由模型合并提取为一份 JSON。
     extra_text 为同一文件中有文字层页面的内容（混合 PDF），与图片一起提供。
+    note 为长文件分段识别时的说明（第几部分），放在提示最前面。
     """
     content = [
         {
@@ -187,6 +199,8 @@ def extract_from_images(
         hint = f"以下 {len(images)} 张图片是同一份文件的连续页面，请合并提取全部字段，只返回有效 JSON。"
     if extra_text.strip():
         hint += "\n\n同一文件中其余页面的文字内容如下，请与图片内容合并提取：\n\n" + extra_text
+    if note:
+        hint = note + "\n\n" + hint
     content.append({"type": "text", "text": hint})
     messages = [
         {"role": "system", "content": prompt},
