@@ -55,7 +55,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # pandas 会顺带收集已安装的 numba/llvmlite/scipy（本程序不使用），使 EXE 增大约 50 MB
+    excludes=['numba', 'llvmlite', 'scipy'],
     noarchive=False,
     cipher=block_cipher,
 )
