@@ -1,0 +1,37 @@
+# 在 GitHub 的 Windows 机器上打包单文件 EXE（与《打包说明.md》第三节相同的命令）。
+# master 有新提交时自动运行，也可在 Actions 页面手动点 "Run workflow"。
+# 打包好的 EXE 在该次运行页面底部的 Artifacts 中下载。
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build EXE
+        run: pyinstaller build.spec --noconfirm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trade-document-maker-exe
+          path: dist/*.exe
+          if-no-files-found: error
