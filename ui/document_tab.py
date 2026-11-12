@@ -557,9 +557,9 @@ class DocumentTab(QWidget):
 
         parts = [f"总数量：{calc.fmt_qty(totals['total_quantity'])}"]
         if totals["total_net_weight"]:
-            parts.append(f"总净重：{calc.fmt_weight(totals['total_net_weight'])} kg")
+            parts.append(f"总净重：{calc.fmt_total_weight(totals['total_net_weight'])} kg")
         if totals["total_gross_weight"]:
-            parts.append(f"总毛重：{calc.fmt_weight(totals['total_gross_weight'])} kg")
+            parts.append(f"总毛重：{calc.fmt_total_weight(totals['total_gross_weight'])} kg")
         if totals["total_cbm"]:
             parts.append(f"总体积：{totals['total_cbm']:.3f} CBM")
         if self._is_financial():
@@ -650,8 +650,10 @@ class DocumentTab(QWidget):
                 text += f"\n{line.get('name_cn')}"
         elif key == "subtotal":
             text = f"{line['subtotal']:,.2f}"
-        elif key in WEIGHT_KEYS or key in ("total_net_weight", "total_gross_weight"):
+        elif key in WEIGHT_KEYS:
             text = calc.fmt_weight(line.get(key, 0))
+        elif key in ("total_net_weight", "total_gross_weight"):
+            text = calc.fmt_total_weight(line.get(key, 0))
         else:
             text = str(line.get(key, ""))
         item = QTableWidgetItem(text)

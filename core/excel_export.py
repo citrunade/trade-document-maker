@@ -27,6 +27,7 @@ MONEY_FORMAT = "#,##0.00"
 PRICE_FORMAT = "#,##0.00##"
 QTY_FORMAT = "#,##0.###"
 WEIGHT_FORMAT = "#,##0.00#"
+TOTAL_WEIGHT_FORMAT = "#,##0.00"
 
 
 def _set(ws, row, col, value, font=None, fill=None, wrap=False, align=None):
@@ -116,7 +117,7 @@ def export_document(doc: dict, filepath: str) -> str:
     for label, value in (
         ("Terms of Payment", calc.effective_terms_of_payment(doc)),
         ("Incoterms", incoterm_line),
-        ("Shipment by", conditions.get("shipment_by", "")),
+        ("Shipment by", calc.shipment_by_text(conditions)),
     ):
         _set(ws, r, 1, label, font=BOLD)
         ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=5)
@@ -181,7 +182,11 @@ def export_document(doc: dict, filepath: str) -> str:
         if not financial:
             weight_keys += ["gross_weight", "total_gross_weight"]
         for key in weight_keys:
-            _set(ws, row, c, round(line.get(key, 0), 3) or None).number_format = WEIGHT_FORMAT; c += 1
+            if key.startswith("total_"):
+                _set(ws, row, c, round(line.get(key, 0), 2) or None).number_format = TOTAL_WEIGHT_FORMAT
+            else:
+                _set(ws, row, c, round(line.get(key, 0), 3) or None).number_format = WEIGHT_FORMAT
+            c += 1
         _set(ws, row, c, line.get("hs_code", "")); c += 1
         _set(ws, row, c, line.get("remark", "")); c += 1
         row += 1

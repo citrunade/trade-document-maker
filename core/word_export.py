@@ -170,7 +170,7 @@ def export_document(doc: dict, filepath: str) -> str:
         ("", delivery.get("address", "")),
         ("Terms of Payment", calc.effective_terms_of_payment(doc)),
         ("Incoterms", incoterm_line),
-        ("Shipment by", conditions.get("shipment_by", "")),
+        ("Shipment by", calc.shipment_by_text(conditions)),
     ])
     _box(right_col, "Information", [
         ("Doc No", doc.get("doc_number", "")),
@@ -208,9 +208,9 @@ def export_document(doc: dict, filepath: str) -> str:
         if financial:
             values += [calc.fmt_unit_price(line.get("unit_price", 0)), f"{line.get('subtotal', 0):,.2f}"]
         values += [line.get("coo", ""), calc.fmt_weight(line.get("net_weight", 0)),
-                   calc.fmt_weight(line["total_net_weight"])]
+                   calc.fmt_total_weight(line["total_net_weight"])]
         if not financial:
-            values += [calc.fmt_weight(line.get("gross_weight", 0)), calc.fmt_weight(line["total_gross_weight"])]
+            values += [calc.fmt_weight(line.get("gross_weight", 0)), calc.fmt_total_weight(line["total_gross_weight"])]
         values += [line.get("hs_code", ""), line.get("remark", "")]
         for c, val in enumerate(values):
             p = _cell_text(row_cells[c], val, size=8)

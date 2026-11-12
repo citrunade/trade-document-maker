@@ -263,7 +263,7 @@ def _left_column(doc: dict, styles, width: float):
     conditions_text = (
         f"<b>Terms of Payment</b>&nbsp;&nbsp;{calc.effective_terms_of_payment(doc)}<br/><br/>"
         f"<b>Incoterms</b>&nbsp;&nbsp;{incoterm_line}<br/><br/>"
-        f"<b>Shipment by</b>&nbsp;&nbsp;{conditions.get('shipment_by', '')}"
+        f"<b>Shipment by</b>&nbsp;&nbsp;{calc.shipment_by_text(conditions)}"
     )
     conditions_box = _boxed_section("Conditions", conditions_text, styles, width)
 
@@ -346,12 +346,12 @@ def _item_table(computed_lines: list, currency: str, styles, financial: bool, co
         row.extend([
             _wrap(line.get("coo", ""), styles["cell_center"]),
             num("Net Weight", calc.fmt_weight(line.get("net_weight", 0))),
-            num("Total N.W.", calc.fmt_weight(line["total_net_weight"])),
+            num("Total N.W.", calc.fmt_total_weight(line["total_net_weight"])),
         ])
         if not financial:
             row.extend([
                 num("Gross Weight", calc.fmt_weight(line.get("gross_weight", 0))),
-                num("Total G.W.", calc.fmt_weight(line["total_gross_weight"])),
+                num("Total G.W.", calc.fmt_total_weight(line["total_gross_weight"])),
             ])
         row.extend([
             _wrap(line.get("hs_code", ""), styles["cell_center"]),

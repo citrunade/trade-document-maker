@@ -3,6 +3,7 @@
 所有金额/重量/体积的计算集中在此，PDF 导出与界面显示共用同一套逻辑，
 避免出现界面与导出 PDF 数据不一致的问题。
 """
+import re
 
 ONES = ["", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE"]
 TEENS = ["TEN", "ELEVEN", "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN",
@@ -166,6 +167,20 @@ def fmt_weight(value: float) -> str:
     return text[:-1] if text.endswith("0") else text
 
 
+def fmt_total_weight(value: float) -> str:
+    """总重量（行合计与单据汇总）最多保留 2 位小数；为 0 时显示空白。"""
+    if not value:
+        return ""
+    return f"{value:.2f}"
+
+
+def shipment_by_text(conditions: dict) -> str:
+    """单据上固定有 "Shipment by" 标签；若预设内容本身以 "by" 开头（如 "By Sender"），
+    去掉这个前缀，避免输出 "Shipment by By Sender"。"""
+    value = (conditions.get("shipment_by") or "").strip()
+    return re.sub(r"^by\b[\s:：]*", "", value, flags=re.IGNORECASE)
+
+
 def effective_terms_of_payment(doc: dict) -> str:
     """选定了付款拆分时用其生成的文字，否则沿用 Conditions 模板中的付款方式。"""
     return payment_terms_text(doc.get("deposit_pct")) or doc.get("conditions_snapshot", {}).get("terms_of_payment", "")
@@ -193,9 +208,9 @@ def summary_parts(totals: dict) -> list:
     """单据底部汇总：总数量 + 有数据时才显示的总净重/总毛重/总体积（没有数据不显示 0）。"""
     parts = [f"Total Qty: {fmt_qty(totals['total_quantity'])}"]
     if totals["total_net_weight"]:
-        parts.append(f"Total N.W.: {fmt_weight(totals['total_net_weight'])} kg")
+        parts.append(f"Total N.W.: {fmt_total_weight(totals['total_net_weight'])} kg")
     if totals["total_gross_weight"]:
-        parts.append(f"Total G.W.: {fmt_weight(totals['total_gross_weight'])} kg")
+        parts.append(f"Total G.W.: {fmt_total_weight(totals['total_gross_weight'])} kg")
     if totals["total_cbm"]:
         parts.append(f"Total Measurement: {totals['total_cbm']:.3f} CBM")
     return parts
